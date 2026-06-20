@@ -1,0 +1,132 @@
+version: '3.8'
+
+networks:
+  aero-net:
+    driver: bridge
+
+services:
+  # Frontend service is migrated to Azure Static Web Apps (SWA) and is run locally for development:
+  # CD into frontend/ and run `npm run dev` to start the Vite dev server on port 3000.
+  # In production, it is deployed directly to Azure Static Web Apps.
+
+  api-service:
+    build: ./services/api-service
+    image: mvnsakash/aeroinbox-api:v1
+    container_name: api-service
+    networks:
+      - aero-net
+    ports:
+      - "8000:8000"
+    environment:
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
+      - FRONTEND_URL=${FRONTEND_URL}
+      - GMAIL_SERVICE_URL=http://gmail-service:8000
+      - AI_SERVICE_URL=http://ai-service:8000
+      - RULE_ENGINE_SERVICE_URL=http://rule-engine-service:8000
+      - MEETING_SERVICE_URL=http://meeting-service:8000
+    depends_on:
+      gmail-service:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+      rule-engine-service:
+        condition: service_healthy
+      meeting-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  gmail-service:
+    build: ./services/gmail-service
+    image: mvnsakash/aeroinbox-gmail:v1
+    container_name: gmail-service
+    networks:
+      - aero-net
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  ai-service:
+    build: ./services/ai-service
+    image: mvnsakash/aeroinbox-ai:v1
+    container_name: ai-service
+    networks:
+      - aero-net
+    expose:
+      - "8000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - AI_PROVIDER=${AI_PROVIDER}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - AZURE_OPENAI_DEPLOYMENT_NAME=${AZURE_OPENAI_DEPLOYMENT_NAME}
+      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION}
+      - AZURE_AI_FOUNDRY_API_KEY=${AZURE_AI_FOUNDRY_API_KEY}
+      - AZURE_AI_FOUNDRY_ENDPOINT=${AZURE_AI_FOUNDRY_ENDPOINT}
+      - AZURE_AI_FOUNDRY_MODEL=${AZURE_AI_FOUNDRY_MODEL}
+      - OPENAI_API_BASE=${OPENAI_API_BASE}
+      - OPENAI_MODEL=${OPENAI_MODEL}
+      - CACHE_DATABASE_PATH=/app/data/ai_cache.db
+    volumes:
+      - ai_cache_vol:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  rule-engine-service:
+    build: ./services/rule-engine
+    image: mvnsakash/aeroinbox-rule-engine:v1
+    container_name: rule-engine-service
+    networks:
+      - aero-net
+    expose:
+      - "8000"
+    volumes:
+      - ./services/rule-engine:/app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  meeting-service:
+    build: ./services/meeting-service
+    image: mvnsakash/aeroinbox-meeting:v1
+    container_name: meeting-service
+    networks:
+      - aero-net
+    expose:
+      - "8000"
+    environment:
+      - AI_SERVICE_URL=http://ai-service:8000
+    volumes:
+      - ./services/meeting-service:/app
+    depends_on:
+      ai-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  ai_cache_vol:
+
