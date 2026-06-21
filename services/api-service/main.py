@@ -235,6 +235,53 @@ async def health(response: Response):
         "redis": redis_status
     }
 
+@app.get("/healthz")
+async def healthz():
+    """
+    Liveness probe endpoint.
+    """
+    return {
+        "status": "healthy",
+        "service": "api-service"
+    }
+
+@app.get("/ready")
+async def ready(response: Response):
+    """
+    Readiness probe endpoint checking Redis and PostgreSQL connections.
+    """
+    redis_ok = True
+    pg_ok = True
+    
+    # Check Redis
+    try:
+        client = await redis_manager.get_client()
+        await client.ping()
+    except Exception as e:
+        logger.error(f"Readiness check failed - Redis connection error: {str(e)}")
+        redis_ok = False
+        
+    # Check PostgreSQL
+    try:
+        await pg_db.fetchval("SELECT 1")
+    except Exception as e:
+        logger.error(f"Readiness check failed - PostgreSQL connection error: {str(e)}")
+        pg_ok = False
+        
+    if not redis_ok or not pg_ok:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {
+            "status": "unhealthy",
+            "service": "api-service",
+            "redis": "healthy" if redis_ok else "unhealthy",
+            "postgres": "healthy" if pg_ok else "unhealthy"
+        }
+        
+    return {
+        "status": "ready",
+        "service": "api-service"
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000)

@@ -1,6 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, Security
+from fastapi import FastAPI, Depends, Security, Response, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import List, Optional
@@ -149,6 +149,57 @@ async def health():
     Simple health check endpoint.
     """
     return {"status": "healthy", "service": "gmail-service"}
+
+@app.get("/healthz")
+async def healthz():
+    """
+    Liveness probe endpoint.
+    """
+    return {
+        "status": "healthy",
+        "service": "gmail-service"
+    }
+
+@app.get("/ready")
+async def ready(response: Response):
+    """
+    Readiness probe endpoint checking Key Vault connection.
+    """
+    import os
+    from azure.identity import DefaultAzureCredential
+    from azure.keyvault.secrets import SecretClient
+    
+    vault_url = os.getenv("AZURE_KEYVAULT_URL") or os.getenv("AZURE_KEY_VAULT_URI")
+    if not vault_url:
+        logger.error("Key Vault URL is not configured")
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {
+            "status": "unhealthy",
+            "service": "gmail-service",
+            "error": "Key Vault URL not configured"
+        }
+        
+    try:
+        credential = DefaultAzureCredential()
+        client = SecretClient(vault_url=vault_url, credential=credential)
+        # Test connection by listing properties and fetching the first element
+        props = client.list_properties_of_secrets()
+        try:
+            next(iter(props))
+        except StopIteration:
+            pass
+        return {
+            "status": "ready",
+            "service": "gmail-service"
+        }
+    except Exception as e:
+        logger.error(f"Readiness check failed - Key Vault connection error: {str(e)}")
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {
+            "status": "unhealthy",
+            "service": "gmail-service",
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn

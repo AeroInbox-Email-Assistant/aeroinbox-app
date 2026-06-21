@@ -658,6 +658,62 @@ async def health(response: Response):
         "database": db_status
     }
 
+@app.get("/healthz")
+async def healthz():
+    """
+    Liveness probe endpoint.
+    """
+    return {
+        "status": "healthy",
+        "service": "meeting-service"
+    }
+
+@app.get("/ready")
+async def ready(response: Response):
+    """
+    Readiness probe endpoint checking PostgreSQL and Service Bus connections.
+    """
+    pg_ok = True
+    sb_ok = True
+    
+    # Check PostgreSQL
+    try:
+        pool = await repo.get_pool()
+        await pool.execute("SELECT 1")
+    except Exception as e:
+        logger.error(f"Readiness check failed - PostgreSQL connection error: {str(e)}")
+        pg_ok = False
+        
+    # Check Service Bus
+    try:
+        from service_bus import HAS_SERVICE_BUS
+        if not HAS_SERVICE_BUS:
+            raise ValueError("azure-servicebus is not installed")
+        if not settings.SERVICE_BUS_CONNECTION_STRING:
+            raise ValueError("SERVICE_BUS_CONNECTION_STRING is not configured")
+            
+        from azure.servicebus.aio import ServiceBusClient
+        async with ServiceBusClient.from_connection_string(settings.SERVICE_BUS_CONNECTION_STRING) as client:
+            async with client.get_queue_receiver(queue_name=settings.SERVICE_BUS_QUEUE_NAME) as receiver:
+                await receiver.peek_messages(max_message_count=1)
+    except Exception as e:
+        logger.error(f"Readiness check failed - Service Bus connection error: {str(e)}")
+        sb_ok = False
+        
+    if not pg_ok or not sb_ok:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {
+            "status": "unhealthy",
+            "service": "meeting-service",
+            "postgres": "healthy" if pg_ok else "unhealthy",
+            "service_bus": "healthy" if sb_ok else "unhealthy"
+        }
+        
+    return {
+        "status": "ready",
+        "service": "meeting-service"
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000)

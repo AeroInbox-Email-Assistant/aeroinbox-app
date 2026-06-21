@@ -1,6 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel
 from services.openai_service import (
     analyze_email_content,
@@ -94,6 +94,58 @@ def health():
     Simple health check endpoint.
     """
     return {"status": "healthy", "service": "ai-service"}
+
+@app.get("/healthz")
+def healthz():
+    """
+    Liveness probe endpoint.
+    """
+    return {
+        "status": "healthy",
+        "service": "ai-service"
+    }
+
+@app.get("/ready")
+def ready(response: Response):
+    """
+    Readiness probe endpoint checking Azure OpenAI reachability.
+    """
+    import os
+    import urllib.request
+    import urllib.error
+    
+    endpoint = settings.AZURE_OPENAI_ENDPOINT or os.getenv("AZURE_OPENAI_ENDPOINT", "")
+    if not endpoint:
+        logger.error("AZURE_OPENAI_ENDPOINT is not configured")
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {
+            "status": "unhealthy",
+            "service": "ai-service",
+            "error": "AZURE_OPENAI_ENDPOINT is not configured"
+        }
+        
+    try:
+        req = urllib.request.Request(endpoint, method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            pass
+        return {
+            "status": "ready",
+            "service": "ai-service"
+        }
+    except urllib.error.HTTPError:
+        # HTTP Errors (e.g. 404, 401) imply the endpoint is reachable and responsive
+        return {
+            "status": "ready",
+            "service": "ai-service"
+        }
+    except Exception as e:
+        logger.error(f"Readiness check failed - Azure OpenAI not reachable: {str(e)}")
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {
+            "status": "unhealthy",
+            "service": "ai-service",
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn

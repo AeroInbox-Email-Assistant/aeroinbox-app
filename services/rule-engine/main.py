@@ -393,6 +393,37 @@ async def health(response: Response):
         "database": db_status
     }
 
+@app.get("/healthz")
+async def healthz():
+    """
+    Liveness probe endpoint.
+    """
+    return {
+        "status": "healthy",
+        "service": "rule-engine"
+    }
+
+@app.get("/ready")
+async def ready(response: Response):
+    """
+    Readiness probe endpoint checking PostgreSQL connection.
+    """
+    try:
+        pool = await db.get_pool()
+        await pool.execute("SELECT 1")
+        return {
+            "status": "ready",
+            "service": "rule-engine"
+        }
+    except Exception as e:
+        logger.error(f"Readiness check failed - PostgreSQL connection error: {str(e)}")
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {
+            "status": "unhealthy",
+            "service": "rule-engine",
+            "error": str(e)
+        }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000)
