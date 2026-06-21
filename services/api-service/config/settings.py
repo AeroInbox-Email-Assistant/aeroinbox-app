@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     
     # Redis configuration
     REDIS_HOST: str = Field(default="localhost")
-    REDIS_PORT: int = Field(default=6379)
-    REDIS_PASSWORD: str = Field(default_factory=lambda: get_secret("redis-password"))
+    REDIS_PORT: int = Field(default=10000)
+    REDIS_PASSWORD: str = Field(default="")
     REDIS_SSL: bool = Field(default=True)
     SESSION_SECRET: str = Field(default_factory=lambda: get_secret("session-secret"))
     

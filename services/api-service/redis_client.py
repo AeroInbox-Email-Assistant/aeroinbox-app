@@ -11,7 +11,7 @@ class RedisManager:
     async def initialize(self):
         logger.info(f"Initializing Redis connection to {settings.REDIS_HOST}:{settings.REDIS_PORT}...")
         
-        schema = "rediss" if settings.REDIS_SSL else "redis"
+        schema = "redis"
         
         if settings.REDIS_PASSWORD:
             url = f"{schema}://:{settings.REDIS_PASSWORD}@{settings.REDIS_HOST}:{settings.REDIS_PORT}/0"
@@ -23,6 +23,7 @@ class RedisManager:
             "decode_responses": True
         }
         if settings.REDIS_SSL:
+            kwargs["ssl"] = True
             kwargs["ssl_cert_reqs"] = None
 
         self.client = aioredis.from_url(url, **kwargs)
