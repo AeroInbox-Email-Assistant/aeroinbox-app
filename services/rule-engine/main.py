@@ -419,7 +419,7 @@ async def ready(response: Response):
         logger.error(f"Readiness check failed - PostgreSQL connection error: {str(e)}")
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
-            "status": "unhealthy",
+            "status": "not ready",
             "service": "rule-engine",
             "error": str(e)
         }

@@ -250,8 +250,7 @@ async def ready(response: Response):
     """
     Readiness probe endpoint checking Redis and PostgreSQL connections.
     """
-    redis_ok = True
-    pg_ok = True
+    errors = []
     
     # Check Redis
     try:
@@ -259,22 +258,21 @@ async def ready(response: Response):
         await client.ping()
     except Exception as e:
         logger.error(f"Readiness check failed - Redis connection error: {str(e)}")
-        redis_ok = False
+        errors.append(f"Redis: {str(e)}")
         
     # Check PostgreSQL
     try:
         await pg_db.fetchval("SELECT 1")
     except Exception as e:
         logger.error(f"Readiness check failed - PostgreSQL connection error: {str(e)}")
-        pg_ok = False
+        errors.append(f"PostgreSQL: {str(e)}")
         
-    if not redis_ok or not pg_ok:
+    if errors:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
-            "status": "unhealthy",
+            "status": "not ready",
             "service": "api-service",
-            "redis": "healthy" if redis_ok else "unhealthy",
-            "postgres": "healthy" if pg_ok else "unhealthy"
+            "error": "; ".join(errors)
         }
         
     return {

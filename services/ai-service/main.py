@@ -114,14 +114,14 @@ def ready(response: Response):
     import urllib.request
     import urllib.error
     
-    endpoint = settings.AZURE_OPENAI_ENDPOINT or os.getenv("AZURE_OPENAI_ENDPOINT", "")
+    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
     if not endpoint:
-        logger.error("AZURE_OPENAI_ENDPOINT is not configured")
+        logger.error("AZURE_OPENAI_ENDPOINT environment variable is missing or empty")
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
-            "status": "unhealthy",
+            "status": "not ready",
             "service": "ai-service",
-            "error": "AZURE_OPENAI_ENDPOINT is not configured"
+            "error": "AZURE_OPENAI_ENDPOINT environment variable is missing or empty"
         }
         
     try:
@@ -142,7 +142,7 @@ def ready(response: Response):
         logger.error(f"Readiness check failed - Azure OpenAI not reachable: {str(e)}")
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
-            "status": "unhealthy",
+            "status": "not ready",
             "service": "ai-service",
             "error": str(e)
         }

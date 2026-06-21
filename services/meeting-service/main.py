@@ -673,8 +673,7 @@ async def ready(response: Response):
     """
     Readiness probe endpoint checking PostgreSQL and Service Bus connections.
     """
-    pg_ok = True
-    sb_ok = True
+    errors = []
     
     # Check PostgreSQL
     try:
@@ -682,10 +681,15 @@ async def ready(response: Response):
         await pool.execute("SELECT 1")
     except Exception as e:
         logger.error(f"Readiness check failed - PostgreSQL connection error: {str(e)}")
-        pg_ok = False
+        errors.append(f"PostgreSQL: {str(e)}")
         
     # Check Service Bus
     try:
+        import os
+        queue_name = os.getenv("SERVICE_BUS_QUEUE_NAME")
+        if not queue_name:
+            raise ValueError("SERVICE_BUS_QUEUE_NAME environment variable is missing or empty")
+            
         from service_bus import HAS_SERVICE_BUS
         if not HAS_SERVICE_BUS:
             raise ValueError("azure-servicebus is not installed")
@@ -694,19 +698,18 @@ async def ready(response: Response):
             
         from azure.servicebus.aio import ServiceBusClient
         async with ServiceBusClient.from_connection_string(settings.SERVICE_BUS_CONNECTION_STRING) as client:
-            async with client.get_queue_receiver(queue_name=settings.SERVICE_BUS_QUEUE_NAME) as receiver:
+            async with client.get_queue_receiver(queue_name=queue_name) as receiver:
                 await receiver.peek_messages(max_message_count=1)
     except Exception as e:
         logger.error(f"Readiness check failed - Service Bus connection error: {str(e)}")
-        sb_ok = False
+        errors.append(f"Service Bus: {str(e)}")
         
-    if not pg_ok or not sb_ok:
+    if errors:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
-            "status": "unhealthy",
+            "status": "not ready",
             "service": "meeting-service",
-            "postgres": "healthy" if pg_ok else "unhealthy",
-            "service_bus": "healthy" if sb_ok else "unhealthy"
+            "error": "; ".join(errors)
         }
         
     return {

@@ -169,14 +169,14 @@ async def ready(response: Response):
     from azure.identity import DefaultAzureCredential
     from azure.keyvault.secrets import SecretClient
     
-    vault_url = os.getenv("AZURE_KEYVAULT_URL") or os.getenv("AZURE_KEY_VAULT_URI")
+    vault_url = os.getenv("AZURE_KEYVAULT_URL")
     if not vault_url:
-        logger.error("Key Vault URL is not configured")
+        logger.error("AZURE_KEYVAULT_URL environment variable is missing or empty")
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
-            "status": "unhealthy",
+            "status": "not ready",
             "service": "gmail-service",
-            "error": "Key Vault URL not configured"
+            "error": "AZURE_KEYVAULT_URL environment variable is missing or empty"
         }
         
     try:
@@ -196,7 +196,7 @@ async def ready(response: Response):
         logger.error(f"Readiness check failed - Key Vault connection error: {str(e)}")
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
-            "status": "unhealthy",
+            "status": "not ready",
             "service": "gmail-service",
             "error": str(e)
         }
