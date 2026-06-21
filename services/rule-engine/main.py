@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field
 import asyncpg
+from prometheus_fastapi_instrumentator import Instrumentator
 from azure.identity import DefaultAzureCredential
 
 from config import settings
@@ -133,6 +134,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+Instrumentator().instrument(app).expose(app)
 
 class PreferenceBoosts(BaseModel):
     inbox_boost: int = 0

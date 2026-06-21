@@ -9,6 +9,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from repository import PostgreSQLMeetingRepository, Meeting, Participant
 from config import settings
@@ -73,6 +74,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+Instrumentator().instrument(app).expose(app)
 
 app.add_middleware(
     CORSMiddleware,

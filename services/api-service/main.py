@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from config.settings import settings
 from routes.auth import router as auth_router
@@ -47,6 +48,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+Instrumentator().instrument(app).expose(app)
 
 # Configure CORS (allow frontend through proxy and dev servers explicitly)
 origins = [

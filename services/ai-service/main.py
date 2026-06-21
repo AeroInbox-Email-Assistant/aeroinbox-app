@@ -2,6 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel
+from prometheus_fastapi_instrumentator import Instrumentator
 from services.openai_service import (
     analyze_email_content,
     analyze_emails_bulk,
@@ -37,6 +38,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+Instrumentator().instrument(app).expose(app)
 
 class EmailProcessRequest(BaseModel):
     email_content: str
