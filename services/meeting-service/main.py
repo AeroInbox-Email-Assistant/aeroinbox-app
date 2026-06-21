@@ -696,6 +696,7 @@ async def ready(response: Response):
         if not settings.SERVICE_BUS_CONNECTION_STRING:
             raise ValueError("SERVICE_BUS_CONNECTION_STRING is not configured")
             
+        # pyrefly: ignore [missing-import]
         from azure.servicebus.aio import ServiceBusClient
         async with ServiceBusClient.from_connection_string(settings.SERVICE_BUS_CONNECTION_STRING) as client:
             async with client.get_queue_receiver(queue_name=queue_name) as receiver:
