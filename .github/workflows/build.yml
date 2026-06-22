@@ -82,6 +82,19 @@ jobs:
             -Dsonar.sources=services,frontend/src
             -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/build/**,**/tests/**,**/venv/**
 
+      - name: Setup Python for Snyk
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python Dependencies for Snyk Analysis
+        run: |
+          pip install -r services/api-service/requirements.txt
+          pip install -r services/gmail-service/requirements.txt
+          pip install -r services/ai-service/requirements.txt
+          pip install -r services/rule-engine/requirements.txt
+          pip install -r services/meeting-service/requirements.txt
+
       - name: Setup Snyk CLI
         uses: snyk/actions/setup@master
 

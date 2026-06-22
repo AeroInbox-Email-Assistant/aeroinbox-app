@@ -159,7 +159,6 @@ async def fetch_and_prioritize_emails(
 
     # 1. Fetch raw emails for each account in parallel
     async def process_account(acc: AccountPayload):
-        nonlocal refreshed_tokens
         access_token = acc.access_token
         
         async with httpx.AsyncClient() as client:
@@ -440,7 +439,6 @@ async def search_emails(
     
     # 1. Search emails for each account in parallel
     async def process_account_search(acc: AccountPayload):
-        nonlocal refreshed_tokens
         access_token = acc.access_token
         
         async with httpx.AsyncClient() as client:
