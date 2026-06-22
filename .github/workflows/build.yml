@@ -199,7 +199,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Run Trivy Vulnerability Scanner
-        uses: aquasecurity/trivy-action@0.20.0
+        uses: aquasecurity/trivy-action@v0.20.0
         continue-on-error: true
         with:
           image-ref: '${{ secrets.ACR_LOGIN_SERVER }}/aeroinbox/${{ matrix.service }}:${{ github.sha }}'
