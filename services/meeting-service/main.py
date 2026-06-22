@@ -9,6 +9,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+# pyrefly: ignore [missing-import]
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from repository import PostgreSQLMeetingRepository, Meeting, Participant

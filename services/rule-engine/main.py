@@ -7,7 +7,9 @@ from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field
+# pyrefly: ignore [missing-import]
 import asyncpg
+# pyrefly: ignore [missing-import]
 from prometheus_fastapi_instrumentator import Instrumentator
 from azure.identity import DefaultAzureCredential
 

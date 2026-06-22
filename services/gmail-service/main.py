@@ -3,7 +3,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Security, Response, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from prometheus_fastapi_instrumentator import Instrumentator
+# pyrefly: ignore [missing-import]
+from prometheus_fastapi_instrumentator import Instrumentator    
 from typing import List, Optional
 import asyncio
 from services.gmail_service import fetch_emails, modify_message_labels, search_emails
