@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     AZURE_AI_FOUNDRY_API_VERSION: str = Field(default="2024-05-01-preview")
     
     # Azure OpenAI
-    AZURE_OPENAI_API_KEY: str = Field(default_factory=lambda: get_secret("azure-openai-key"))
+    AZURE_OPENAI_API_KEY: str = Field(default_factory=lambda: get_secret("azure-openai-api-key") or get_secret("azure-openai-key"))
     AZURE_OPENAI_ENDPOINT: str = Field(default="")
     AZURE_OPENAI_DEPLOYMENT_NAME: str = Field(default="gpt-4o-mini")
     AZURE_OPENAI_API_VERSION: str = Field(default="2024-02-15-preview")
