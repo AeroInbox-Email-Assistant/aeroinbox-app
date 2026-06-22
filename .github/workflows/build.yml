@@ -175,6 +175,8 @@ jobs:
           - service: frontend
             context: frontend
             dockerfile: frontend/Dockerfile
+            build_args: |
+              VITE_API_URL=https://api.aeroinbox.qzz.io
 
     steps:
       - name: Checkout Code
@@ -197,6 +199,7 @@ jobs:
             ${{ secrets.ACR_LOGIN_SERVER }}/aeroinbox/${{ matrix.service }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: ${{ matrix.build_args }}
 
       - name: Run Trivy Vulnerability Scanner
         uses: aquasecurity/trivy-action@v0.20.0
