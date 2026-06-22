@@ -1,0 +1,254 @@
+name: Build Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+
+concurrency:
+  group: aeroinbox-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+
+jobs:
+  lint-and-test:
+    name: Lint and Test Code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python Linting Tools
+        run: |
+          pip install flake8
+
+      - name: Lint Python Code (Syntax Checks)
+        run: |
+          flake8 services/ --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Run Python Unit Tests
+        run: |
+          python -m unittest services/meeting-service/verify_meeting_service.py
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Frontend Dependencies
+        working-directory: frontend
+        run: |
+          npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+
+      - name: Lint Frontend Code
+        working-directory: frontend
+        run: |
+          npm run lint
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: SonarCloud Scan
+        uses: sonarsource/sonarcloud-github-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }}
+            -Dsonar.projectKey=${{ secrets.SONAR_ORGANIZATION }}_aeroinbox-app
+            -Dsonar.sources=services,frontend/src
+            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/build/**,**/tests/**,**/venv/**
+
+      - name: Setup Snyk CLI
+        uses: snyk/actions/setup@master
+
+      - name: Snyk Scan - api-service
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --file=services/api-service/requirements.txt --severity-threshold=high
+
+      - name: Snyk Scan - gmail-service
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --file=services/gmail-service/requirements.txt --severity-threshold=high
+
+      - name: Snyk Scan - ai-service
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --file=services/ai-service/requirements.txt --severity-threshold=high
+
+      - name: Snyk Scan - rule-engine
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --file=services/rule-engine/requirements.txt --severity-threshold=high
+
+      - name: Snyk Scan - meeting-service
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --file=services/meeting-service/requirements.txt --severity-threshold=high
+
+      - name: Snyk Scan - frontend
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --file=frontend/package.json --severity-threshold=high
+
+  build-and-push:
+    name: Build and Push - ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: [lint-and-test, security-scan]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: api-service
+            context: services/api-service
+            dockerfile: services/api-service/Dockerfile
+          - service: gmail-service
+            context: services/gmail-service
+            dockerfile: services/gmail-service/Dockerfile
+          - service: ai-service
+            context: services/ai-service
+            dockerfile: services/ai-service/Dockerfile
+          - service: rule-engine
+            context: services/rule-engine
+            dockerfile: services/rule-engine/Dockerfile
+          - service: meeting-service
+            context: services/meeting-service
+            dockerfile: services/meeting-service/Dockerfile
+          - service: frontend
+            context: frontend
+            dockerfile: frontend/Dockerfile
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image (Local Load)
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          load: true
+          tags: |
+            ${{ secrets.ACR_LOGIN_SERVER }}/aeroinbox/${{ matrix.service }}:${{ github.sha }}
+            ${{ secrets.ACR_LOGIN_SERVER }}/aeroinbox/${{ matrix.service }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@0.20.0
+        continue-on-error: true
+        with:
+          image-ref: '${{ secrets.ACR_LOGIN_SERVER }}/aeroinbox/${{ matrix.service }}:${{ github.sha }}'
+          format: 'table'
+          output: 'trivy-report-${{ matrix.service }}.txt'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'HIGH,CRITICAL'
+
+      - name: Upload Trivy Report Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-${{ matrix.service }}
+          path: trivy-report-${{ matrix.service }}.txt
+
+      - name: Azure Login (OIDC)
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to Azure Container Registry
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+        run: |
+          az acr login --name ${{ secrets.ACR_NAME }}
+
+      - name: Push Docker Image to ACR
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+        run: |
+          docker push ${{ secrets.ACR_LOGIN_SERVER }}/aeroinbox/${{ matrix.service }}:${{ github.sha }}
+          docker push ${{ secrets.ACR_LOGIN_SERVER }}/aeroinbox/${{ matrix.service }}:latest
+
+  update-helm-tags:
+    name: Update Helm Image Tags
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    steps:
+      - name: Checkout Helm Repository
+        uses: actions/checkout@v4
+        with:
+          repository: AeroInbox-Email-Assistant/aeroinbox-helm
+          token: ${{ secrets.HELM_REPO_PAT }}
+
+      - name: Update Service Tags in Values.yaml
+        run: |
+          services=("api-service" "gmail-service" "ai-service" "rule-engine" "meeting-service" "frontend")
+          
+          # Determine values file dynamically based on branch
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            files=("environments/production/values.yaml")
+          elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+            files=("environments/dev/values.yaml")
+          else
+            files=("environments/production/values.yaml" "environments/dev/values.yaml")
+          fi
+          
+          for file in "${files[@]}"; do
+            mkdir -p "$(dirname "$file")"
+            if [ ! -f "$file" ]; then
+              echo "---" > "$file"
+            fi
+            for service in "${services[@]}"; do
+              yq -i ".[\"$service\"].image.tag = \"${{ github.sha }}\"" "$file"
+            done
+          done
+
+      - name: Commit and Push Tag Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add environments/production/values.yaml environments/dev/values.yaml
+          if ! git diff --cached --quiet; then
+            git commit -m "ci: update image tags to ${{ github.sha }}"
+            git push origin main
+          else
+            echo "No changes to commit"
+          fi
