@@ -42,9 +42,14 @@ jobs:
         run: |
           flake8 services/ --count --select=E9,F63,F7,F82 --show-source --statistics
 
-      - name: Run Python Unit Tests
+      - name: Install Dependencies for Testing
         run: |
-          python -m unittest services/meeting-service/verify_meeting_service.py
+          pip install -r services/meeting-service/requirements.txt
+
+      - name: Run Python Unit Tests
+        env:
+          PYTHONPATH: services/meeting-service
+        run: python -m unittest services/meeting-service/verify_meeting_service.py
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -94,6 +99,16 @@ jobs:
           pip install -r services/ai-service/requirements.txt
           pip install -r services/rule-engine/requirements.txt
           pip install -r services/meeting-service/requirements.txt
+
+      - name: Setup Node.js for Snyk
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Frontend Dependencies for Snyk Analysis
+        working-directory: frontend
+        run: |
+          npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
       - name: Setup Snyk CLI
         uses: snyk/actions/setup@master
