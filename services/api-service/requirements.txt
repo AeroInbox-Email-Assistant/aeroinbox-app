@@ -10,4 +10,4 @@ azure-keyvault-secrets>=4.7.0
 redis>=5.0.1
 asyncpg>=0.29.0
 azure-monitor-opentelemetry>=1.6.0
-prometheus-fastapi-instrumentator==6.1.0
+prometheus-fastapi-instrumentator>=7.0.0
