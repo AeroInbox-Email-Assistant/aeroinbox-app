@@ -22,46 +22,200 @@ permissions:
   pull-requests: write
 
 jobs:
+  detect-changes:
+    name: Detect Repository Changes
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has-changes: ${{ steps.set-matrix.outputs.has-changes }}
+      has-python-changes: ${{ steps.set-matrix.outputs.has-python-changes }}
+      has-frontend-changes: ${{ steps.set-matrix.outputs.has-frontend-changes }}
+      changed-services: ${{ steps.set-matrix.outputs.changed-services }}
+      api-service-changed: ${{ steps.set-matrix.outputs.api-service-changed }}
+      gmail-service-changed: ${{ steps.set-matrix.outputs.gmail-service-changed }}
+      ai-service-changed: ${{ steps.set-matrix.outputs.ai-service-changed }}
+      rule-engine-changed: ${{ steps.set-matrix.outputs.rule-engine-changed }}
+      meeting-service-changed: ${{ steps.set-matrix.outputs.meeting-service-changed }}
+      frontend-changed: ${{ steps.set-matrix.outputs.frontend-changed }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Filter Paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            api-service:
+              - 'services/api-service/**'
+            gmail-service:
+              - 'services/gmail-service/**'
+            ai-service:
+              - 'services/ai-service/**'
+            rule-engine:
+              - 'services/rule-engine/**'
+            meeting-service:
+              - 'services/meeting-service/**'
+            frontend:
+              - 'frontend/**'
+            shared:
+              - 'shared/**'
+              - 'common/**'
+              - 'libs/**'
+              - '.github/workflows/**'
+
+      - name: Generate Matrix and Outputs
+        id: set-matrix
+        run: |
+          api_service="${{ steps.filter.outputs.api-service }}"
+          gmail_service="${{ steps.filter.outputs.gmail-service }}"
+          ai_service="${{ steps.filter.outputs.ai-service }}"
+          rule_engine="${{ steps.filter.outputs.rule-engine }}"
+          meeting_service="${{ steps.filter.outputs.meeting-service }}"
+          frontend="${{ steps.filter.outputs.frontend }}"
+          shared="${{ steps.filter.outputs.shared }}"
+          event_name="${{ github.event_name }}"
+
+          if [ "$shared" = "true" ] || [ "$event_name" = "workflow_dispatch" ]; then
+            api_service="true"
+            gmail_service="true"
+            ai_service="true"
+            rule_engine="true"
+            meeting_service="true"
+            frontend="true"
+          fi
+
+          MATRIX_ITEMS="[]"
+          CHANGED_SERVICES=""
+
+          add_item() {
+            local service=$1
+            local context=$2
+            local dockerfile=$3
+            local build_args=$4
+            
+            local item
+            if [ -n "$build_args" ]; then
+              item=$(jq -n \
+                --arg svc "$service" \
+                --arg ctx "$context" \
+                --arg df "$dockerfile" \
+                --arg ba "$build_args" \
+                '{service: $svc, context: $ctx, dockerfile: $df, build_args: $ba}')
+            else
+              item=$(jq -n \
+                --arg svc "$service" \
+                --arg ctx "$context" \
+                --arg df "$dockerfile" \
+                '{service: $svc, context: $ctx, dockerfile: $df}')
+            fi
+            MATRIX_ITEMS=$(echo "$MATRIX_ITEMS" | jq ". + [$item]")
+            
+            if [ -z "$CHANGED_SERVICES" ]; then
+              CHANGED_SERVICES="$service"
+            else
+              CHANGED_SERVICES="$CHANGED_SERVICES $service"
+            fi
+          }
+
+          if [ "$api_service" = "true" ]; then
+            add_item "api-service" "services/api-service" "services/api-service/Dockerfile" ""
+          fi
+          if [ "$gmail_service" = "true" ]; then
+            add_item "gmail-service" "services/gmail-service" "services/gmail-service/Dockerfile" ""
+          fi
+          if [ "$ai_service" = "true" ]; then
+            add_item "ai-service" "services/ai-service" "services/ai-service/Dockerfile" ""
+          fi
+          if [ "$rule_engine" = "true" ]; then
+            add_item "rule-engine" "services/rule-engine" "services/rule-engine/Dockerfile" ""
+          fi
+          if [ "$meeting_service" = "true" ]; then
+            add_item "meeting-service" "services/meeting-service" "services/meeting-service/Dockerfile" ""
+          fi
+          if [ "$frontend" = "true" ]; then
+            add_item "frontend" "frontend" "frontend/Dockerfile" "VITE_API_URL=https://api.aeroinbox.qzz.io"
+          fi
+
+          echo "matrix=$(echo "$MATRIX_ITEMS" | jq -c .)" >> $GITHUB_OUTPUT
+          echo "changed-services=$CHANGED_SERVICES" >> $GITHUB_OUTPUT
+
+          LEN=$(echo "$MATRIX_ITEMS" | jq '. | length')
+          if [ "$LEN" -gt 0 ]; then
+            echo "has-changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-changes=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [ "$api_service" = "true" ] || [ "$gmail_service" = "true" ] || [ "$ai_service" = "true" ] || [ "$rule_engine" = "true" ] || [ "$meeting_service" = "true" ]; then
+            echo "has-python-changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-python-changes=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [ "$frontend" = "true" ]; then
+            echo "has-frontend-changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-frontend-changes=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "api-service-changed=$api_service" >> $GITHUB_OUTPUT
+          echo "gmail-service-changed=$gmail_service" >> $GITHUB_OUTPUT
+          echo "ai-service-changed=$ai_service" >> $GITHUB_OUTPUT
+          echo "rule-engine-changed=$rule_engine" >> $GITHUB_OUTPUT
+          echo "meeting-service-changed=$meeting_service" >> $GITHUB_OUTPUT
+          echo "frontend-changed=$frontend" >> $GITHUB_OUTPUT
+
   lint-and-test:
     name: Lint and Test Code
     runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has-changes == 'true'
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Setup Python
+        if: needs.detect-changes.outputs.has-python-changes == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install Python Linting Tools
+        if: needs.detect-changes.outputs.has-python-changes == 'true'
         run: |
           pip install flake8
 
       - name: Lint Python Code (Syntax Checks)
+        if: needs.detect-changes.outputs.has-python-changes == 'true'
         run: |
           flake8 services/ --count --select=E9,F63,F7,F82 --show-source --statistics
 
       - name: Install Dependencies for Testing
+        if: needs.detect-changes.outputs.has-python-changes == 'true'
         run: |
           pip install -r services/meeting-service/requirements.txt
 
       - name: Run Python Unit Tests
+        if: needs.detect-changes.outputs.has-python-changes == 'true'
         env:
           PYTHONPATH: services/meeting-service
         run: python -m unittest services/meeting-service/verify_meeting_service.py
 
       - name: Setup Node.js
+        if: needs.detect-changes.outputs.has-frontend-changes == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install Frontend Dependencies
+        if: needs.detect-changes.outputs.has-frontend-changes == 'true'
         working-directory: frontend
         run: |
           npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
       - name: Lint Frontend Code
+        if: needs.detect-changes.outputs.has-frontend-changes == 'true'
         working-directory: frontend
         run: |
           npm run lint
@@ -69,6 +223,8 @@ jobs:
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has-changes == 'true'
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -88,24 +244,28 @@ jobs:
             -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/build/**,**/tests/**,**/venv/**
 
       - name: Setup Python for Snyk
+        if: needs.detect-changes.outputs.has-python-changes == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install Python Dependencies for Snyk Analysis
+        if: needs.detect-changes.outputs.has-python-changes == 'true'
         run: |
-          pip install -r services/api-service/requirements.txt
-          pip install -r services/gmail-service/requirements.txt
-          pip install -r services/ai-service/requirements.txt
-          pip install -r services/rule-engine/requirements.txt
-          pip install -r services/meeting-service/requirements.txt
+          if [ "${{ needs.detect-changes.outputs.api-service-changed }}" = "true" ]; then pip install -r services/api-service/requirements.txt; fi
+          if [ "${{ needs.detect-changes.outputs.gmail-service-changed }}" = "true" ]; then pip install -r services/gmail-service/requirements.txt; fi
+          if [ "${{ needs.detect-changes.outputs.ai-service-changed }}" = "true" ]; then pip install -r services/ai-service/requirements.txt; fi
+          if [ "${{ needs.detect-changes.outputs.rule-engine-changed }}" = "true" ]; then pip install -r services/rule-engine/requirements.txt; fi
+          if [ "${{ needs.detect-changes.outputs.meeting-service-changed }}" = "true" ]; then pip install -r services/meeting-service/requirements.txt; fi
 
       - name: Setup Node.js for Snyk
+        if: needs.detect-changes.outputs.frontend-changed == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install Frontend Dependencies for Snyk Analysis
+        if: needs.detect-changes.outputs.frontend-changed == 'true'
         working-directory: frontend
         run: |
           npm ci --legacy-peer-deps || npm install --legacy-peer-deps
@@ -114,36 +274,42 @@ jobs:
         uses: snyk/actions/setup@master
 
       - name: Snyk Scan - api-service
+        if: needs.detect-changes.outputs.api-service-changed == 'true'
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk test --file=services/api-service/requirements.txt --severity-threshold=high
 
       - name: Snyk Scan - gmail-service
+        if: needs.detect-changes.outputs.gmail-service-changed == 'true'
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk test --file=services/gmail-service/requirements.txt --severity-threshold=high
 
       - name: Snyk Scan - ai-service
+        if: needs.detect-changes.outputs.ai-service-changed == 'true'
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk test --file=services/ai-service/requirements.txt --severity-threshold=high
 
       - name: Snyk Scan - rule-engine
+        if: needs.detect-changes.outputs.rule-engine-changed == 'true'
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk test --file=services/rule-engine/requirements.txt --severity-threshold=high
 
       - name: Snyk Scan - meeting-service
+        if: needs.detect-changes.outputs.meeting-service-changed == 'true'
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk test --file=services/meeting-service/requirements.txt --severity-threshold=high
 
       - name: Snyk Scan - frontend
+        if: needs.detect-changes.outputs.frontend-changed == 'true'
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
@@ -152,31 +318,12 @@ jobs:
   build-and-push:
     name: Build and Push - ${{ matrix.service }}
     runs-on: ubuntu-latest
-    needs: [lint-and-test, security-scan]
+    needs: [detect-changes, lint-and-test, security-scan]
+    if: needs.detect-changes.outputs.has-changes == 'true'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - service: api-service
-            context: services/api-service
-            dockerfile: services/api-service/Dockerfile
-          - service: gmail-service
-            context: services/gmail-service
-            dockerfile: services/gmail-service/Dockerfile
-          - service: ai-service
-            context: services/ai-service
-            dockerfile: services/ai-service/Dockerfile
-          - service: rule-engine
-            context: services/rule-engine
-            dockerfile: services/rule-engine/Dockerfile
-          - service: meeting-service
-            context: services/meeting-service
-            dockerfile: services/meeting-service/Dockerfile
-          - service: frontend
-            context: frontend
-            dockerfile: frontend/Dockerfile
-            build_args: |
-              VITE_API_URL=https://api.aeroinbox.qzz.io
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
 
     steps:
       - name: Checkout Code
@@ -241,8 +388,11 @@ jobs:
   update-helm-tags:
     name: Update Helm Image Tags
     runs-on: ubuntu-latest
-    needs: build-and-push
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    needs: [detect-changes, build-and-push]
+    if: |
+      needs.detect-changes.outputs.has-changes == 'true' &&
+      github.event_name == 'push' && 
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
     steps:
       - name: Checkout Helm Repository
         uses: actions/checkout@v4
@@ -252,7 +402,7 @@ jobs:
 
       - name: Update Service Tags in Values.yaml
         run: |
-          services=("api-service" "gmail-service" "ai-service" "rule-engine" "meeting-service" "frontend")
+          changed_services="${{ needs.detect-changes.outputs.changed-services }}"
           
           # Determine values file dynamically based on branch
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
@@ -268,7 +418,7 @@ jobs:
             if [ ! -f "$file" ]; then
               echo "---" > "$file"
             fi
-            for service in "${services[@]}"; do
+            for service in $changed_services; do
               yq -i ".[\"$service\"].image.tag = \"${{ github.sha }}\"" "$file"
             done
           done
@@ -288,8 +438,8 @@ jobs:
   scan-summary:
     name: PR Scan Summary
     runs-on: ubuntu-latest
-    needs: [lint-and-test, security-scan, build-and-push]
-    if: always() && github.event_name == 'pull_request'
+    needs: [detect-changes, lint-and-test, security-scan, build-and-push]
+    if: always() && github.event_name == 'pull_request' && needs.detect-changes.outputs.has-changes == 'true'
     steps:
       - name: Comment PR with results
         uses: actions/github-script@v7
