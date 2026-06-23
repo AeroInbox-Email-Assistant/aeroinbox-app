@@ -242,13 +242,7 @@ jobs:
             -Dsonar.projectKey=${{ secrets.SONAR_ORGANIZATION }}_aeroinbox-app
             -Dsonar.sources=services,frontend/src
             -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/build/**,**/tests/**,**/venv/**
-
-      - name: SonarCloud Quality Gate check
-        uses: sonarsource/sonarqube-quality-gate-action@v1
-        with:
-          pollingTimeoutSec: 300
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+            -Dsonar.qualitygate.wait=true
 
       - name: Setup Python for Snyk
         if: needs.detect-changes.outputs.has-python-changes == 'true'
