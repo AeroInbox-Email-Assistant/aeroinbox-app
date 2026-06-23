@@ -127,6 +127,7 @@ def ready(response: Response):
             "error": "AZURE_OPENAI_ENDPOINT environment variable is missing or empty"
         }
         
+    req = urllib.request.Request(endpoint, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=5):
             pass
