@@ -8,7 +8,7 @@ import "./App.css";
 export default function App() {
   useEffect(() => {
     const savedTheme = localStorage.getItem("theme");
-    const prefersDark = window.matchMedia(
+    const prefersDark = globalThis.matchMedia(
       "(prefers-color-scheme: dark)",
     ).matches;
 

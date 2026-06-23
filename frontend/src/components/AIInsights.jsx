@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import PropTypes from "prop-types";
 
 export default function AIInsights({ insights, isLoading, folder }) {
   const [copied, setCopied] = useState(false);
@@ -137,15 +138,7 @@ export default function AIInsights({ insights, isLoading, folder }) {
         </span>
         <div>
           <span
-            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wide uppercase ${
-              priority === "Critical"
-                ? "bg-rose-500 text-white dark:bg-rose-500/15 dark:text-rose-400 border border-rose-500/35"
-                : priority === "High"
-                  ? "bg-red-500/10 text-red-500 dark:text-red-400 border border-red-500/20"
-                  : priority === "Medium"
-                    ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20"
-                    : "bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-350 dark:border-slate-700/50"
-            }`}
+            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wide uppercase ${getPriorityClass(priority)}`}
           >
             {priority}
           </span>
@@ -223,3 +216,31 @@ export default function AIInsights({ insights, isLoading, folder }) {
     </div>
   );
 }
+
+function getPriorityClass(priority) {
+  switch (priority) {
+    case "Critical":
+      return "bg-rose-500 text-white dark:bg-rose-500/15 dark:text-rose-400 border border-rose-500/35";
+    case "High":
+      return "bg-red-500/10 text-red-500 dark:text-red-400 border border-red-500/20";
+    case "Medium":
+      return "bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20";
+    default:
+      return "bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-350 dark:border-slate-700/50";
+  }
+}
+
+AIInsights.propTypes = {
+  insights: PropTypes.shape({
+    summary: PropTypes.string,
+    priority: PropTypes.string,
+    reply: PropTypes.string,
+    is_spam_false_positive: PropTypes.bool,
+    spam_analysis_reason: PropTypes.string,
+    is_meeting_request: PropTypes.bool,
+    has_deadline: PropTypes.bool,
+    deadline_date: PropTypes.string,
+  }),
+  isLoading: PropTypes.bool,
+  folder: PropTypes.string,
+};

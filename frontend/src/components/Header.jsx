@@ -1,5 +1,19 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
+import PropTypes from "prop-types";
 import { AUTH_LOGIN_URL } from "@/config";
+
+function getNotifTypeClass(type) {
+  switch (type) {
+    case "Critical":
+      return "bg-red-500/10 text-red-500 dark:text-red-400";
+    case "Spam Alert":
+      return "bg-amber-500/10 text-amber-600 dark:text-amber-400";
+    case "Meeting":
+      return "bg-blue-500/10 text-blue-600 dark:text-blue-400";
+    default:
+      return "bg-indigo-500/10 text-indigo-500 dark:text-indigo-400";
+  }
+}
 
 export default function Header({
   onRefresh,
@@ -34,9 +48,9 @@ export default function Header({
       localStorage.getItem("aeroinbox_session_id") ||
       localStorage.getItem("google_access_token");
     if (sessionId) {
-      window.location.href = `${AUTH_LOGIN_URL}?session_id=${sessionId}`;
+      globalThis.location.href = `${AUTH_LOGIN_URL}?session_id=${sessionId}`;
     } else {
-      window.location.href = AUTH_LOGIN_URL;
+      globalThis.location.href = AUTH_LOGIN_URL;
     }
   };
 
@@ -189,26 +203,19 @@ export default function Header({
                     No urgent notifications.
                   </div>
                 ) : (
-                  notifications.map((n, i) => (
-                    <div
-                      key={i}
+                  notifications.map((n) => (
+                    <button
+                      type="button"
+                      key={`notif-${n.type}-${n.subject}`}
                       onClick={() => {
                         onSelectEmail(n.email);
                         setNotifMenuOpen(false);
                       }}
-                      className="p-2.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/50 cursor-pointer text-left transition-colors"
+                      className="w-full p-2.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/50 cursor-pointer text-left transition-colors"
                     >
                       <div className="flex justify-between items-start mb-0.5">
                         <span
-                          className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded-full ${
-                            n.type === "Critical"
-                              ? "bg-red-500/10 text-red-500 dark:text-red-400"
-                              : n.type === "Spam Alert"
-                                ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
-                                : n.type === "Meeting"
-                                  ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                                  : "bg-indigo-500/10 text-indigo-500 dark:text-indigo-400"
-                          }`}
+                          className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded-full ${getNotifTypeClass(n.type)}`}
                         >
                           {n.type}
                         </span>
@@ -222,7 +229,7 @@ export default function Header({
                       <p className="text-[10px] text-slate-400 truncate">
                         From: {n.sender}
                       </p>
-                    </div>
+                    </button>
                   ))
                 )}
               </div>
@@ -284,9 +291,9 @@ export default function Header({
                   <span>Unified Inbox (All)</span>
                 </button>
 
-                {accounts.map((acc, index) => (
+                {accounts.map((acc) => (
                   <button
-                    key={index}
+                    key={acc.email}
                     onClick={() => {
                       onSwitchAccount(acc.email);
                       setAccountMenuOpen(false);
@@ -359,3 +366,28 @@ export default function Header({
     </header>
   );
 }
+
+Header.propTypes = {
+  onRefresh: PropTypes.func.isRequired,
+  isLoading: PropTypes.bool,
+  accounts: PropTypes.arrayOf(
+    PropTypes.shape({
+      email: PropTypes.string.isRequired,
+      access_token: PropTypes.string,
+      refresh_token: PropTypes.string,
+    }),
+  ),
+  activeEmail: PropTypes.string,
+  onSwitchAccount: PropTypes.func.isRequired,
+  notifications: PropTypes.arrayOf(
+    PropTypes.shape({
+      type: PropTypes.string,
+      subject: PropTypes.string,
+      sender: PropTypes.string,
+      email: PropTypes.object,
+    }),
+  ),
+  onSelectEmail: PropTypes.func.isRequired,
+  onSearch: PropTypes.func,
+  onClearSearch: PropTypes.func,
+};

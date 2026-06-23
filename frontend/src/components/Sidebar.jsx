@@ -1,4 +1,5 @@
 import React from "react";
+import PropTypes from "prop-types";
 import { useNavigate } from "react-router-dom";
 
 export default function Sidebar({
@@ -210,3 +211,9 @@ export default function Sidebar({
     </aside>
   );
 }
+
+Sidebar.propTypes = {
+  onOpenRules: PropTypes.func.isRequired,
+  activeSection: PropTypes.string.isRequired,
+  setActiveSection: PropTypes.func.isRequired,
+};

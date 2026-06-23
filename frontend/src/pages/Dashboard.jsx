@@ -27,7 +27,6 @@ export default function Dashboard() {
   // Accounts management
   const [accounts, setAccounts] = useState([]);
   const [activeEmailFilter, setActiveEmailFilter] = useState(null); // null means Unified (All)
-  const [refreshedTokensCount, setRefreshedTokensCount] = useState(0);
 
   // Filters
   const [showAll, setShowAll] = useState(false); // false: show unread only, true: show all
@@ -111,8 +110,9 @@ export default function Dashboard() {
   }, [activeEmailFilter]);
 
   const handleAcknowledgeReminder = async (meetingId) => {
+    const sanitizedId = encodeURIComponent(String(meetingId));
     try {
-      await API.post(`/meetings/reminders/${meetingId}/acknowledge`);
+      await API.post(`/meetings/reminders/${sanitizedId}/acknowledge`);
       setActiveReminder(null);
       fetchMeetings();
     } catch (err) {
@@ -121,7 +121,7 @@ export default function Dashboard() {
   };
 
   const handleSearch = async (query) => {
-    if (!query || !query.trim()) {
+    if (!query?.trim()) {
       handleClearSearch();
       return;
     }
@@ -165,7 +165,8 @@ export default function Dashboard() {
     try {
       const stored = localStorage.getItem("aeroinbox_accounts");
       list = stored ? JSON.parse(stored) : [];
-    } catch (e) {
+    } catch {
+      // Stored data is corrupted; reset to empty list
       list = [];
     }
 
@@ -326,8 +327,9 @@ export default function Dashboard() {
   };
 
   const handleConfirmMeeting = async (meetingId) => {
+    const sanitizedId = encodeURIComponent(String(meetingId));
     try {
-      await API.post(`/meetings/${meetingId}/confirm`);
+      await API.post(`/meetings/${sanitizedId}/confirm`);
       await fetchMeetings();
     } catch (err) {
       console.error("Failed to confirm meeting:", err);
@@ -335,8 +337,9 @@ export default function Dashboard() {
   };
 
   const handleDismissMeeting = async (meetingId) => {
+    const sanitizedId = encodeURIComponent(String(meetingId));
     try {
-      await API.post(`/meetings/${meetingId}/dismiss`);
+      await API.post(`/meetings/${sanitizedId}/dismiss`);
       await fetchMeetings();
     } catch (err) {
       console.error("Failed to dismiss meeting:", err);
@@ -344,8 +347,9 @@ export default function Dashboard() {
   };
 
   const handleAcceptUpdate = async (meetingId) => {
+    const sanitizedId = encodeURIComponent(String(meetingId));
     try {
-      await API.post(`/meetings/${meetingId}/accept-update`);
+      await API.post(`/meetings/${sanitizedId}/accept-update`);
       await fetchMeetings();
     } catch (err) {
       console.error("Failed to accept meeting update:", err);
@@ -353,8 +357,9 @@ export default function Dashboard() {
   };
 
   const handleRemoveMeeting = async (meetingId) => {
+    const sanitizedId = encodeURIComponent(String(meetingId));
     try {
-      await API.post(`/meetings/${meetingId}/remove`);
+      await API.post(`/meetings/${sanitizedId}/remove`);
       await fetchMeetings();
     } catch (err) {
       console.error("Failed to remove meeting:", err);
@@ -394,11 +399,11 @@ export default function Dashboard() {
 
   useEffect(() => {
     const token = localStorage.getItem("google_access_token");
-    if (!token) {
-      navigate("/");
-    } else {
+    if (token) {
       fetchEmails();
       loadRules();
+    } else {
+      navigate("/");
     }
   }, [navigate, showAll]);
 
@@ -455,7 +460,7 @@ export default function Dashboard() {
   const handleSwitchAccount = (email) => {
     setActiveEmailFilter(email);
     // Auto-select first matching email
-    const filtered = emails.filter((e) => {
+    const firstMatch = emails.find((e) => {
       const matchAcc = !email || e.account_email === email;
       const matchFolder =
         activeSection === "inbox"
@@ -463,7 +468,7 @@ export default function Dashboard() {
           : e.folder === "SPAM" && e.ai_analysis?.is_spam_false_positive;
       return matchAcc && matchFolder;
     });
-    setSelectedEmail(filtered[0] || null);
+    setSelectedEmail(firstMatch || null);
   };
 
   // Generic function to filter emails according to state
@@ -505,9 +510,10 @@ export default function Dashboard() {
       : localStorage.getItem("google_access_token");
 
     try {
+      const sanitizedEmailId = encodeURIComponent(String(email.id));
       const endpoint = read
-        ? `/emails/${email.id}/read`
-        : `/emails/${email.id}/unread`;
+        ? `/emails/${sanitizedEmailId}/read`
+        : `/emails/${sanitizedEmailId}/unread`;
       await API.post(
         endpoint,
         {},
@@ -543,8 +549,9 @@ export default function Dashboard() {
       : localStorage.getItem("google_access_token");
 
     try {
+      const sanitizedEmailId = encodeURIComponent(String(email.id));
       await API.post(
-        `/emails/${email.id}/move-to-inbox`,
+        `/emails/${sanitizedEmailId}/move-to-inbox`,
         {},
         {
           headers: { Authorization: `Bearer ${token}` },
@@ -564,12 +571,13 @@ export default function Dashboard() {
 
     // Strip name bracket to get raw sender email
     const fromStr = email.sender || "";
-    const match = fromStr.match(/<([^>]+)>/);
+    const match = fromStr.match(/<([^>]*)>/);
     const senderEmailAddress = match ? match[1] : fromStr;
 
     try {
+      const sanitizedEmailId = encodeURIComponent(String(email.id));
       await API.post(
-        `/emails/${email.id}/mark-safe`,
+        `/emails/${sanitizedEmailId}/mark-safe`,
         {
           sender_email: senderEmailAddress,
         },
@@ -674,9 +682,9 @@ export default function Dashboard() {
     try {
       await API.post("/tasks/settings", {
         user_id: userEmail,
-        reminder_interval_hours: parseInt(interval)
+        reminder_interval_hours: Number.parseInt(interval, 10)
       });
-      setReminderInterval(parseInt(interval));
+      setReminderInterval(Number.parseInt(interval, 10));
     } catch (err) {
       console.error("Failed to save task settings:", err);
     }
@@ -703,8 +711,9 @@ export default function Dashboard() {
   };
 
   const handleUpdateTaskStatus = async (taskId, newStatus) => {
+    const sanitizedId = encodeURIComponent(String(taskId));
     try {
-      const response = await API.put(`/tasks/${taskId}`, { status: newStatus });
+      const response = await API.put(`/tasks/${sanitizedId}`, { status: newStatus });
       setTasks((prev) =>
         prev.map((t) => (t.id === taskId ? response.data : t))
       );
@@ -714,8 +723,9 @@ export default function Dashboard() {
   };
 
   const handleDeleteTask = async (taskId) => {
+    const sanitizedId = encodeURIComponent(String(taskId));
     try {
-      await API.delete(`/tasks/${taskId}`);
+      await API.delete(`/tasks/${sanitizedId}`);
       setTasks((prev) => prev.filter((t) => t.id !== taskId));
     } catch (err) {
       console.error("Failed to delete task:", err);
@@ -809,10 +819,11 @@ export default function Dashboard() {
             </h3>
             <form onSubmit={handleCreateTask} className="space-y-3">
               <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-405 uppercase">
+                <label htmlFor="task-title" className="text-[10px] font-bold text-slate-500 dark:text-slate-405 uppercase">
                   Task Title *
                 </label>
                 <input
+                  id="task-title"
                   type="text"
                   required
                   placeholder="Task title"
@@ -822,10 +833,11 @@ export default function Dashboard() {
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-405 uppercase">
+                <label htmlFor="task-desc" className="text-[10px] font-bold text-slate-500 dark:text-slate-405 uppercase">
                   Description
                 </label>
                 <textarea
+                  id="task-desc"
                   placeholder="Optional description"
                   value={newTaskDesc}
                   onChange={(e) => setNewTaskDesc(e.target.value)}
@@ -834,10 +846,11 @@ export default function Dashboard() {
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-405 uppercase">
+                <label htmlFor="task-due-date" className="text-[10px] font-bold text-slate-500 dark:text-slate-405 uppercase">
                   Due Date
                 </label>
                 <input
+                  id="task-due-date"
                   type="datetime-local"
                   value={newTaskDueDate}
                   onChange={(e) => setNewTaskDueDate(e.target.value)}
@@ -1268,7 +1281,7 @@ export default function Dashboard() {
         setActiveSection={(sec) => {
           setActiveSection(sec);
           // Auto select first email in the folder section
-          const filtered = emails.filter((e) => {
+          const firstMatch = emails.find((e) => {
             const matchAcc =
               !activeEmailFilter || e.account_email === activeEmailFilter;
             const matchFolder =
@@ -1277,7 +1290,7 @@ export default function Dashboard() {
                 : e.folder === "SPAM" && e.ai_analysis?.is_spam_false_positive;
             return matchAcc && matchFolder;
           });
-          setSelectedEmail(filtered[0] || null);
+          setSelectedEmail(firstMatch || null);
         }}
       />
 
@@ -1320,9 +1333,9 @@ export default function Dashboard() {
                     <button
                       onClick={() => setShowAll(false)}
                       className={`px-2.5 py-1 rounded-full text-[10px] font-bold transition-all cursor-pointer ${
-                        !showAll
-                          ? "bg-indigo-600 text-white shadow-sm"
-                          : "bg-slate-200/65 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-350"
+                        showAll
+                          ? "bg-slate-200/65 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-350"
+                          : "bg-indigo-600 text-white shadow-sm"
                       }`}
                     >
                       Unread
