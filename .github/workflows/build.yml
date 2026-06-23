@@ -244,9 +244,9 @@ jobs:
             -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/build/**,**/tests/**,**/venv/**
 
       - name: SonarCloud Quality Gate check
-        uses: sonarsource/sonarcloud-github-gate-action@v3
+        uses: sonarsource/sonarqube-quality-gate-action@v1
         with:
-          timeout-minutes: 5
+          pollingTimeoutSec: 300
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
