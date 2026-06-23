@@ -67,7 +67,7 @@ async def fetch_multi_account_emails(payload: FetchEmailsRequest):
     """
     Fetches emails from multiple Gmail accounts in parallel.
     """
-    async def fetch_one(acc: AccountCredential):
+    def fetch_one(acc: AccountCredential):
         try:
             emails = fetch_emails(
                 access_token=acc.access_token,
@@ -81,7 +81,7 @@ async def fetch_multi_account_emails(payload: FetchEmailsRequest):
             logger.exception(f"Error fetching emails for {acc.email}")
             return []
 
-    tasks = [fetch_one(acc) for acc in payload.accounts]
+    tasks = [asyncio.to_thread(fetch_one, acc) for acc in payload.accounts]
     results = await asyncio.gather(*tasks)
     
     # Flatten the list of lists
@@ -101,7 +101,7 @@ async def search_multi_account_emails(payload: SearchEmailsRequest):
     """
     Searches emails from multiple Gmail accounts in parallel using a search query.
     """
-    async def search_one(acc: AccountCredential):
+    def search_one(acc: AccountCredential):
         try:
             emails = search_emails(
                 access_token=acc.access_token,
@@ -115,7 +115,7 @@ async def search_multi_account_emails(payload: SearchEmailsRequest):
             logger.exception(f"Error searching emails for {acc.email}")
             return []
 
-    tasks = [search_one(acc) for acc in payload.accounts]
+    tasks = [asyncio.to_thread(search_one, acc) for acc in payload.accounts]
     results = await asyncio.gather(*tasks)
     
     # Flatten the list of lists

@@ -156,6 +156,21 @@ async def get_unread_emails_legacy(
     )
     return result["emails"]
 
+async def _update_redis_session_token(session_id: str, email: str, new_token: str):
+    try:
+        redis_client = await redis_manager.get_client()
+        session_key = f"session:{session_id}"
+        session_data = await redis_client.get(session_key)
+        if session_data:
+            sess_accs = json.loads(session_data)
+            for sa in sess_accs:
+                if sa.get("email") == email:
+                    sa["access_token"] = new_token
+            await redis_client.setex(session_key, 3600, json.dumps(sess_accs))
+            logger.info(f"Refreshed token updated in Redis session for {email}")
+    except Exception:
+        logger.exception("Failed to update session token in Redis")
+
 async def _process_single_account(
     acc: AccountPayload,
     include_read: bool,
@@ -188,19 +203,7 @@ async def _process_single_account(
                     
                     # Update in Redis session
                     if session_id:
-                        try:
-                            redis_client = await redis_manager.get_client()
-                            session_key = f"session:{session_id}"
-                            session_data = await redis_client.get(session_key)
-                            if session_data:
-                                sess_accs = json.loads(session_data)
-                                for sa in sess_accs:
-                                    if sa.get("email") == acc.email:
-                                        sa["access_token"] = new_token
-                                await redis_client.setex(session_key, 3600, json.dumps(sess_accs))
-                                logger.info(f"Refreshed token updated in Redis session for {acc.email}")
-                        except Exception:
-                            logger.exception("Failed to update session token in Redis")
+                        await _update_redis_session_token(session_id, acc.email, new_token)
 
                     # Retry the request with the new access token
                     fetch_body["accounts"][0]["access_token"] = access_token
@@ -370,6 +373,60 @@ def _compute_hybrid_priority(email: dict, r_info: dict, ai_info: Optional[dict])
     email["final_score"] = final_score
 
 
+async def _evaluate_uncached_unread_emails(
+    uncached_unread_emails: List[dict],
+    background_tasks: BackgroundTasks
+):
+    async with httpx.AsyncClient() as client:
+        rule_task = client.post(
+            f"{settings.RULE_ENGINE_SERVICE_URL}/evaluate/bulk",
+            json=uncached_unread_emails,
+            timeout=15.0
+        )
+        ai_task = client.post(
+            f"{settings.AI_SERVICE_URL}/process/bulk",
+            json={"emails": uncached_unread_emails},
+            timeout=45.0
+        )
+        
+        try:
+            rule_res, ai_res = await asyncio.gather(rule_task, ai_task, return_exceptions=True)
+            
+            # Parse Rules Engine results
+            rule_data = {}
+            if isinstance(rule_res, httpx.Response) and rule_res.status_code == 200:
+                rule_data = rule_res.json()
+            else:
+                logger.error(f"Rule Engine call failed: {rule_res}")
+                
+            # Parse AI Service results
+            ai_data = {}
+            if isinstance(ai_res, httpx.Response) and ai_res.status_code == 200:
+                ai_data = ai_res.json()
+            else:
+                logger.error(f"AI Service call failed: {ai_res}")
+                
+            # Compute hybrid priority for each uncached email
+            for email in uncached_unread_emails:
+                email_id = email.get("id")
+                r_info = rule_data.get(email_id, {"rule_score": 0, "matched_rules": []})
+                ai_info = ai_data.get(email_id)
+                _compute_hybrid_priority(email, r_info, ai_info)
+            
+            # Save new evaluations in background only if AI Service call succeeded
+            if isinstance(ai_res, httpx.Response) and ai_res.status_code == 200:
+                background_tasks.add_task(save_emails_to_cache, uncached_unread_emails)
+            else:
+                logger.warning("Skipping DB cache write for unread emails due to transient AI service failure.")
+            
+        except Exception:
+            logger.exception("Error during orchestrator batch evaluation")
+            for email in uncached_unread_emails:
+                email["rule_analysis"] = None
+                email["ai_analysis"] = None
+                email["final_priority"] = "Low"
+                email["final_score"] = 0
+
 @router.post("/unread", response_model=GetEmailsResponse, responses=_RESPONSES_COMMON)
 async def fetch_and_prioritize_emails(
     payload: GetEmailsRequest,
@@ -405,55 +462,7 @@ async def fetch_and_prioritize_emails(
     
     # 4. Analyze uncached unread emails (rules engine + AI)
     if uncached_unread_emails:
-        async with httpx.AsyncClient() as client:
-            rule_task = client.post(
-                f"{settings.RULE_ENGINE_SERVICE_URL}/evaluate/bulk",
-                json=uncached_unread_emails,
-                timeout=15.0
-            )
-            ai_task = client.post(
-                f"{settings.AI_SERVICE_URL}/process/bulk",
-                json={"emails": uncached_unread_emails},
-                timeout=45.0
-            )
-            
-            try:
-                rule_res, ai_res = await asyncio.gather(rule_task, ai_task, return_exceptions=True)
-                
-                # Parse Rules Engine results
-                rule_data = {}
-                if isinstance(rule_res, httpx.Response) and rule_res.status_code == 200:
-                    rule_data = rule_res.json()
-                else:
-                    logger.error(f"Rule Engine call failed: {rule_res}")
-                    
-                # Parse AI Service results
-                ai_data = {}
-                if isinstance(ai_res, httpx.Response) and ai_res.status_code == 200:
-                    ai_data = ai_res.json()
-                else:
-                    logger.error(f"AI Service call failed: {ai_res}")
-                    
-                # Compute hybrid priority for each uncached email
-                for email in uncached_unread_emails:
-                    email_id = email.get("id")
-                    r_info = rule_data.get(email_id, {"rule_score": 0, "matched_rules": []})
-                    ai_info = ai_data.get(email_id)
-                    _compute_hybrid_priority(email, r_info, ai_info)
-                
-                # Save new evaluations in background only if AI Service call succeeded
-                if isinstance(ai_res, httpx.Response) and ai_res.status_code == 200:
-                    background_tasks.add_task(save_emails_to_cache, uncached_unread_emails)
-                else:
-                    logger.warning("Skipping DB cache write for unread emails due to transient AI service failure.")
-                
-            except Exception:
-                logger.exception("Error during orchestrator batch evaluation")
-                for email in uncached_unread_emails:
-                    email["rule_analysis"] = None
-                    email["ai_analysis"] = None
-                    email["final_priority"] = "Low"
-                    email["final_score"] = 0
+        await _evaluate_uncached_unread_emails(uncached_unread_emails, background_tasks)
                     
     # 5. Process read emails (exclude from active prioritization)
     for email in read_emails:
@@ -505,18 +514,7 @@ async def _search_single_account(
                     
                     # Update in Redis session
                     if session_id:
-                        try:
-                            redis_client = await redis_manager.get_client()
-                            session_key = f"session:{session_id}"
-                            session_data = await redis_client.get(session_key)
-                            if session_data:
-                                sess_accs = json.loads(session_data)
-                                for sa in sess_accs:
-                                    if sa.get("email") == acc.email:
-                                        sa["access_token"] = new_token
-                                await redis_client.setex(session_key, 3600, json.dumps(sess_accs))
-                        except Exception:
-                            logger.exception("Failed to update session token in Redis")
+                        await _update_redis_session_token(session_id, acc.email, new_token)
 
                     # Retry the request with the new access token
                     search_body["accounts"][0]["access_token"] = access_token
@@ -640,6 +638,29 @@ async def _check_thread_reply(client: httpx.AsyncClient, email: dict, token: str
     return False
 
 
+async def _insert_no_reply_task(pg_db, email: dict, no_reply_title: str, existing_tasks: set):
+    email_id = email.get("id")
+    user_id = email.get("account_email", "unknown")
+    sender = email.get("sender", "Unknown Sender")
+    
+    if (email_id, "email_no_reply", no_reply_title) not in existing_tasks:
+        try:
+            await pg_db.execute(
+                """
+                INSERT INTO user_tasks (user_id, task_source, email_id, title, description, status)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                user_id,
+                "email_no_reply",
+                email_id,
+                no_reply_title,
+                f"You have not replied to this email thread from {sender}.",
+                "pending"
+            )
+            logger.info(f"Created No-Reply task for email {email_id}: {no_reply_title}")
+        except Exception:
+            logger.exception("Failed to insert No-Reply task")
+
 async def _create_no_reply_tasks(
     pg_db,
     client: httpx.AsyncClient,
@@ -663,29 +684,9 @@ async def _create_no_reply_tasks(
         results = await asyncio.gather(*thread_checks)
         for email, has_reply in zip(valid_thread_emails, results):
             if has_reply is False:
-                email_id = email.get("id")
-                user_id = email.get("account_email", "unknown")
                 subject = email.get("subject", "No Subject")
-                sender = email.get("sender", "Unknown Sender")
                 no_reply_title = f"Reply to: {subject}"
-                
-                if (email_id, "email_no_reply", no_reply_title) not in existing_tasks:
-                    try:
-                        await pg_db.execute(
-                            """
-                            INSERT INTO user_tasks (user_id, task_source, email_id, title, description, status)
-                            VALUES ($1, $2, $3, $4, $5, $6)
-                            """,
-                            user_id,
-                            "email_no_reply",
-                            email_id,
-                            no_reply_title,
-                            f"You have not replied to this email thread from {sender}.",
-                            "pending"
-                        )
-                        logger.info(f"Created No-Reply task for email {email_id}: {no_reply_title}")
-                    except Exception:
-                        logger.exception("Failed to insert No-Reply task")
+                await _insert_no_reply_task(pg_db, email, no_reply_title, existing_tasks)
 
 
 async def generate_email_tasks_in_background(emails: List[dict], accounts: List[AccountPayload]):

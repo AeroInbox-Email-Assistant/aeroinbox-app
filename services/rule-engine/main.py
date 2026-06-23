@@ -200,6 +200,33 @@ async def seed_default_rules(user_id: str):
     for rtype, rval, score in defaults:
         await db.execute(_INSERT_RULE_QUERY, user_id, rtype, rval, score)
 
+def _populate_single_rule(r, vip_senders, domains, keywords, custom_senders, custom_keywords, custom_categories, preference_boosts):
+    rtype = r["rule_type"]
+    rval = r["rule_value"]
+    score = r["score"]
+
+    if rtype == "vip_sender":
+        vip_senders.append(rval)
+    elif rtype == "domain":
+        domains.append(rval)
+    elif rtype == "keyword":
+        keywords.append(rval)
+    elif rtype == "custom_sender":
+        custom_senders.append(rval)
+    elif rtype == "custom_keyword":
+        custom_keywords.append(rval)
+    elif rtype == "custom_categories":
+        try:
+            return json.loads(rval)
+        except Exception:
+            return {}
+    elif rtype == "preference_boost":
+        if rval == "inbox_boost":
+            preference_boosts.inbox_boost = score
+        elif rval == "spam_boost":
+            preference_boosts.spam_boost = score
+    return custom_categories
+
 def _populate_rules_config(rows) -> tuple:
     vip_senders = []
     domains = []
@@ -210,30 +237,9 @@ def _populate_rules_config(rows) -> tuple:
     preference_boosts = PreferenceBoosts(inbox_boost=0, spam_boost=0)
 
     for r in rows:
-        rtype = r["rule_type"]
-        rval = r["rule_value"]
-        score = r["score"]
-
-        if rtype == "vip_sender":
-            vip_senders.append(rval)
-        elif rtype == "domain":
-            domains.append(rval)
-        elif rtype == "keyword":
-            keywords.append(rval)
-        elif rtype == "custom_sender":
-            custom_senders.append(rval)
-        elif rtype == "custom_keyword":
-            custom_keywords.append(rval)
-        elif rtype == "custom_categories":
-            try:
-                custom_categories = json.loads(rval)
-            except Exception:
-                custom_categories = {}
-        elif rtype == "preference_boost":
-            if rval == "inbox_boost":
-                preference_boosts.inbox_boost = score
-            elif rval == "spam_boost":
-                preference_boosts.spam_boost = score
+        custom_categories = _populate_single_rule(
+            r, vip_senders, domains, keywords, custom_senders, custom_keywords, custom_categories, preference_boosts
+        )
 
     return vip_senders, domains, keywords, custom_senders, custom_keywords, custom_categories, preference_boosts
 
@@ -289,6 +295,63 @@ async def update_rules(config: RulesConfig, user_id: str = "default"):
     await save_rules_for_user(user_id, config)
     return config
 
+def _match_senders(sender_lower: str, vip_senders: list[str], custom_senders: list[str], matched_rules: list[str]) -> int:
+    for vip in vip_senders:
+        if vip in sender_lower:
+            matched_rules.append(f"VIP Sender Title: {vip}")
+            return 30
+            
+    for cs in custom_senders:
+        if cs in sender_lower:
+            matched_rules.append(f"Custom VIP Sender: {cs}")
+            return 35
+            
+    return 0
+
+def _match_domain(sender_lower: str, domains: list[str], matched_rules: list[str]) -> int:
+    email_match = re.search(r'[\w\.-]+@([\w\.-]+)', sender_lower)
+    if email_match:
+        sender_domain = email_match.group(1)
+        for d in domains:
+            if d in sender_domain:
+                matched_rules.append(f"Important Domain: @{d}")
+                return 20
+    return 0
+
+def _match_keywords(subject_lower: str, snippet_lower: str, keywords: list[str], matched_rules: list[str]) -> int:
+    score = 0
+    kw_matched_count = 0
+    for kw in keywords:
+        if kw in subject_lower or kw in snippet_lower:
+            score += 10
+            matched_rules.append(f"Urgent Keyword: {kw}")
+            kw_matched_count += 1
+            if kw_matched_count >= 3:
+                break
+    return score
+
+def _match_custom_keywords(subject_lower: str, body_lower: str, custom_keywords: list[str], matched_rules: list[str]) -> int:
+    score = 0
+    custom_kw_matched_count = 0
+    for ck in custom_keywords:
+        if ck in subject_lower or ck in body_lower:
+            score += 15
+            matched_rules.append(f"Custom Keyword Match: {ck}")
+            custom_kw_matched_count += 1
+            if custom_kw_matched_count >= 2:
+                break
+    return score
+
+def _get_folder_boost(folder: str, inbox_boost: int, spam_boost: int, matched_rules: list[str]) -> int:
+    folder_upper = folder.upper()
+    if folder_upper == "INBOX" and inbox_boost != 0:
+        matched_rules.append(f"Folder Preference Boost: Inbox ({inbox_boost})")
+        return inbox_boost
+    elif folder_upper == "SPAM" and spam_boost != 0:
+        matched_rules.append(f"Folder Preference Boost: Spam ({spam_boost})")
+        return spam_boost
+    return 0
+
 def _evaluate_single_email(email: EmailModel, rules: RulesConfig) -> EmailEvaluationResult:
     vip_senders = [v.lower() for v in rules.vip_senders]
     domains = [d.lower().strip("@") for d in rules.domains]
@@ -305,60 +368,11 @@ def _evaluate_single_email(email: EmailModel, rules: RulesConfig) -> EmailEvalua
     snippet_lower = email.snippet.lower()
     body_lower = email.body.lower()
 
-    # 1. VIP Senders
-    vip_matched = False
-    for vip in vip_senders:
-        if vip in sender_lower:
-            rule_score += 30
-            matched_rules.append(f"VIP Sender Title: {vip}")
-            vip_matched = True
-            break
-
-    # 2. Custom User Senders
-    if not vip_matched:
-        for cs in custom_senders:
-            if cs in sender_lower:
-                rule_score += 35
-                matched_rules.append(f"Custom VIP Sender: {cs}")
-                break
-
-    # 3. Domain Rules
-    email_match = re.search(r'[\w\.-]+@([\w\.-]+)', sender_lower)
-    if email_match:
-        sender_domain = email_match.group(1)
-        for d in domains:
-            if d in sender_domain:
-                rule_score += 20
-                matched_rules.append(f"Important Domain: @{d}")
-                break
-
-    # 4. Standard Keywords
-    kw_matched_count = 0
-    for kw in keywords:
-        if kw in subject_lower or kw in snippet_lower:
-            rule_score += 10
-            matched_rules.append(f"Urgent Keyword: {kw}")
-            kw_matched_count += 1
-            if kw_matched_count >= 3:
-                break
-
-    # 5. Custom User Keywords
-    custom_kw_matched_count = 0
-    for ck in custom_keywords:
-        if ck in subject_lower or ck in body_lower:
-            rule_score += 15
-            matched_rules.append(f"Custom Keyword Match: {ck}")
-            custom_kw_matched_count += 1
-            if custom_kw_matched_count >= 2:
-                break
-
-    # 6. Folder boosts
-    if email.folder.upper() == "INBOX" and inbox_boost != 0:
-        rule_score += inbox_boost
-        matched_rules.append(f"Folder Preference Boost: Inbox ({inbox_boost})")
-    elif email.folder.upper() == "SPAM" and spam_boost != 0:
-        rule_score += spam_boost
-        matched_rules.append(f"Folder Preference Boost: Spam ({spam_boost})")
+    rule_score += _match_senders(sender_lower, vip_senders, custom_senders, matched_rules)
+    rule_score += _match_domain(sender_lower, domains, matched_rules)
+    rule_score += _match_keywords(subject_lower, snippet_lower, keywords, matched_rules)
+    rule_score += _match_custom_keywords(subject_lower, body_lower, custom_keywords, matched_rules)
+    rule_score += _get_folder_boost(email.folder, inbox_boost, spam_boost, matched_rules)
 
     return EmailEvaluationResult(
         rule_score=rule_score,
