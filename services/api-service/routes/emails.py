@@ -2,7 +2,7 @@ import httpx
 import asyncio
 import json
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Annotated
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -37,13 +37,10 @@ async def trigger_meeting_detection(emails: List[dict]):
                 json={"emails": emails},
                 timeout=15.0
             )
-        except Exception as e:
-            logger.error(f"Error triggering background meeting detection: {str(e)}")
+        except Exception:
+            logger.exception("Error triggering background meeting detection")
 
-async def save_emails_to_cache(emails: List[dict]):
-    """
-    Saves the processed emails to the prioritized_emails table.
-    """
+async def _save_single_email(email: dict):
     from database import db as pg_db
     query = """
         INSERT INTO prioritized_emails (
@@ -66,34 +63,40 @@ async def save_emails_to_cache(emails: List[dict]):
             final_score = EXCLUDED.final_score,
             action_items = EXCLUDED.action_items;
     """
+    rule_analysis = email.get("rule_analysis") or {}
+    ai_analysis = email.get("ai_analysis") or {}
+    
+    matched_rules_json = json.dumps(rule_analysis.get("matched_rules", []))
+    action_items_json = json.dumps(ai_analysis.get("action_items", []))
+    
+    try:
+        await pg_db.execute(
+            query,
+            email.get("id"),
+            email.get("account_email", "unknown"),
+            rule_analysis.get("rule_score", 0),
+            matched_rules_json,
+            ai_analysis.get("summary") if ai_analysis else None,
+            ai_analysis.get("priority") if ai_analysis else None,
+            ai_analysis.get("reply") if ai_analysis else None,
+            ai_analysis.get("is_spam_false_positive", False) if ai_analysis else False,
+            ai_analysis.get("spam_analysis_reason") if ai_analysis else None,
+            ai_analysis.get("is_meeting_request", False) if ai_analysis else False,
+            ai_analysis.get("has_deadline", False) if ai_analysis else False,
+            ai_analysis.get("deadline_date") if ai_analysis else None,
+            email.get("final_priority", "Low"),
+            email.get("final_score", 0),
+            action_items_json
+        )
+    except Exception:
+        logger.exception(f"Failed to cache email {email.get('id')} to database")
+
+async def save_emails_to_cache(emails: List[dict]):
+    """
+    Saves the processed emails to the prioritized_emails table.
+    """
     for email in emails:
-        rule_analysis = email.get("rule_analysis") or {}
-        ai_analysis = email.get("ai_analysis") or {}
-        
-        matched_rules_json = json.dumps(rule_analysis.get("matched_rules", []))
-        action_items_json = json.dumps(ai_analysis.get("action_items", []))
-        
-        try:
-            await pg_db.execute(
-                query,
-                email.get("id"),
-                email.get("account_email", "unknown"),
-                rule_analysis.get("rule_score", 0),
-                matched_rules_json,
-                ai_analysis.get("summary") if ai_analysis else None,
-                ai_analysis.get("priority") if ai_analysis else None,
-                ai_analysis.get("reply") if ai_analysis else None,
-                ai_analysis.get("is_spam_false_positive", False) if ai_analysis else False,
-                ai_analysis.get("spam_analysis_reason") if ai_analysis else None,
-                ai_analysis.get("is_meeting_request", False) if ai_analysis else False,
-                ai_analysis.get("has_deadline", False) if ai_analysis else False,
-                ai_analysis.get("deadline_date") if ai_analysis else None,
-                email.get("final_priority", "Low"),
-                email.get("final_score", 0),
-                action_items_json
-            )
-        except Exception as e:
-            logger.error(f"Failed to cache email {email.get('id')} to database: {str(e)}")
+        await _save_single_email(email)
 
 async def refresh_google_token(refresh_token: str) -> Optional[str]:
     """
@@ -113,15 +116,15 @@ async def refresh_google_token(refresh_token: str) -> Optional[str]:
                 return response.json().get("access_token")
             else:
                 logger.error(f"Google Token refresh returned status {response.status_code}: {response.text}")
-        except Exception as e:
-            logger.error(f"Exception refreshing Google token: {str(e)}")
+        except Exception:
+            logger.exception("Exception refreshing Google token")
     return None
 
 @router.get("/unread")
 async def get_unread_emails_legacy(
     background_tasks: BackgroundTasks,
-    accounts: List[AccountPayload] = Depends(get_session_accounts),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)],
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)]
 ):
     """
     Legacy GET endpoint for single-account backward compatibility.
@@ -139,25 +142,14 @@ async def get_unread_emails_legacy(
     )
     return result["emails"]
 
-@router.post("/unread", response_model=GetEmailsResponse)
-async def fetch_and_prioritize_emails(
-    payload: GetEmailsRequest,
-    background_tasks: BackgroundTasks,
-    accounts: List[AccountPayload] = Depends(get_session_accounts),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """
-    Primary endpoint that fetches emails for multiple accounts, refreshes expired tokens,
-    runs the rules engine & AI on unread messages, calculates hybrid priorities, and returns them.
-    """
-    session_id = credentials.credentials
-    refreshed_tokens = {}
+async def _fetch_account_emails(
+    accounts: List[AccountPayload],
+    include_read: bool,
+    refreshed_tokens: dict,
+    session_id: Optional[str]
+) -> List[dict]:
     all_emails = []
     
-    # Overwrite the request accounts with validated credentials from the Redis session
-    payload.accounts = accounts
-
-    # 1. Fetch raw emails for each account in parallel
     async def process_account(acc: AccountPayload):
         access_token = acc.access_token
         
@@ -165,7 +157,7 @@ async def fetch_and_prioritize_emails(
             try:
                 fetch_body = {
                     "accounts": [{"email": acc.email, "access_token": access_token}],
-                    "include_read": payload.include_read,
+                    "include_read": include_read,
                     "max_results": 15
                 }
                 response = await client.post(
@@ -196,8 +188,8 @@ async def fetch_and_prioritize_emails(
                                             sa["access_token"] = new_token
                                     await redis_client.setex(session_key, 3600, json.dumps(sess_accs))
                                     logger.info(f"Refreshed token updated in Redis session for {acc.email}")
-                            except Exception as ex:
-                                logger.error(f"Failed to update session token in Redis: {str(ex)}")
+                            except Exception:
+                                logger.exception("Failed to update session token in Redis")
 
                         # Retry the request with the new access token
                         fetch_body["accounts"][0]["access_token"] = access_token
@@ -212,16 +204,166 @@ async def fetch_and_prioritize_emails(
                 else:
                     logger.error(f"Gmail Service returned {response.status_code} for {acc.email}: {response.text}")
                     return []
-            except Exception as e:
-                logger.error(f"Orchestrator error fetching emails for {acc.email}: {str(e)}")
+            except Exception:
+                logger.exception(f"Orchestrator error fetching emails for {acc.email}")
                 return []
-                 
-    tasks = [process_account(acc) for acc in payload.accounts]
+                  
+    tasks = [process_account(acc) for acc in accounts]
     accounts_emails = await asyncio.gather(*tasks)
     
-    # Flatten emails
     for emails_list in accounts_emails:
         all_emails.extend(emails_list)
+        
+    return all_emails
+
+
+async def _enrich_cached_emails(unread_emails: List[dict]) -> tuple[List[dict], List[dict]]:
+    cached_unread_emails = []
+    uncached_unread_emails = []
+    
+    if not unread_emails:
+        return cached_unread_emails, uncached_unread_emails
+
+    from database import db as pg_db
+    email_ids = [e.get("id") for e in unread_emails]
+    try:
+        rows = await pg_db.fetch(
+            "SELECT * FROM prioritized_emails WHERE email_id = ANY($1::varchar[])",
+            email_ids
+        )
+        cache_map = {row["email_id"]: row for row in rows}
+        
+        for email in unread_emails:
+            email_id = email.get("id")
+            if email_id in cache_map:
+                db_row = cache_map[email_id]
+                matched_rules = db_row["matched_rules"]
+                if isinstance(matched_rules, str):
+                    try:
+                        matched_rules = json.loads(matched_rules)
+                    except Exception:
+                        matched_rules = []
+                        
+                email["rule_analysis"] = {
+                    "rule_score": db_row["rule_score"],
+                    "matched_rules": matched_rules
+                }
+                
+                if db_row["ai_priority"] is not None:
+                    action_items = db_row.get("action_items")
+                    if isinstance(action_items, str):
+                        try:
+                            action_items = json.loads(action_items)
+                        except Exception:
+                            action_items = []
+                    elif not isinstance(action_items, list):
+                        action_items = []
+                    email["ai_analysis"] = {
+                        "summary": db_row["ai_summary"],
+                        "priority": db_row["ai_priority"],
+                        "reply": db_row["ai_reply"],
+                        "is_spam_false_positive": db_row["is_spam_false_positive"],
+                        "spam_analysis_reason": db_row["spam_analysis_reason"],
+                        "is_meeting_request": db_row["is_meeting_request"],
+                        "has_deadline": db_row["has_deadline"],
+                        "deadline_date": db_row["deadline_date"],
+                        "action_items": action_items
+                    }
+                else:
+                    email["ai_analysis"] = None
+                    
+                email["final_priority"] = db_row["final_priority"]
+                email["final_score"] = db_row["final_score"]
+                cached_unread_emails.append(email)
+            else:
+                uncached_unread_emails.append(email)
+    except Exception:
+        logger.exception("Error checking prioritized_emails database cache")
+        uncached_unread_emails = unread_emails
+        
+    return cached_unread_emails, uncached_unread_emails
+
+
+def _compute_hybrid_priority(email: dict, r_info: dict, ai_info: Optional[dict]) -> None:
+    email["rule_analysis"] = {
+        "rule_score": r_info.get("rule_score", 0),
+        "matched_rules": r_info.get("matched_rules", [])
+    }
+    
+    if ai_info:
+        email["ai_analysis"] = {
+            "summary": ai_info.get("summary"),
+            "priority": ai_info.get("priority"),
+            "reply": ai_info.get("reply"),
+            "is_spam_false_positive": ai_info.get("is_spam_false_positive", False),
+            "spam_analysis_reason": ai_info.get("spam_analysis_reason", ""),
+            "is_meeting_request": ai_info.get("is_meeting_request", False),
+            "has_deadline": ai_info.get("has_deadline", False),
+            "deadline_date": ai_info.get("deadline_date", ""),
+            "action_items": ai_info.get("action_items", [])
+        }
+    else:
+        email["ai_analysis"] = None
+        
+    # Calculate Scores:
+    # AI Score: Critical/High=30, Medium=15, Low=0. Boost meeting (+10), deadline (+10)
+    ai_score = 0
+    if email["ai_analysis"]:
+        ai_priority = email["ai_analysis"].get("priority", "Low")
+        if ai_priority == "High" or ai_priority == "Critical":
+            ai_score = 30
+        elif ai_priority == "Medium":
+            ai_score = 15
+            
+        if email["ai_analysis"].get("is_meeting_request"):
+            ai_score += 10
+        if email["ai_analysis"].get("has_deadline"):
+            ai_score += 10
+            
+    rule_score = email["rule_analysis"].get("rule_score", 0)
+    preference_score = 0
+    
+    # Spam folder penalty/adjustment
+    if email.get("folder") == "SPAM":
+        if email["ai_analysis"] and email["ai_analysis"].get("is_spam_false_positive"):
+            preference_score += 10
+        else:
+            ai_score = 0
+            rule_score = 0
+            
+    final_score = ai_score + rule_score + preference_score
+    
+    if final_score >= 70:
+        email["final_priority"] = "Critical"
+    elif final_score >= 45:
+        email["final_priority"] = "High"
+    elif final_score >= 20:
+        email["final_priority"] = "Medium"
+    else:
+        email["final_priority"] = "Low"
+        
+    email["final_score"] = final_score
+
+
+@router.post("/unread", response_model=GetEmailsResponse)
+async def fetch_and_prioritize_emails(
+    payload: GetEmailsRequest,
+    background_tasks: BackgroundTasks,
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)],
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)]
+):
+    """
+    Primary endpoint that fetches emails for multiple accounts, refreshes expired tokens,
+    runs the rules engine & AI on unread messages, calculates hybrid priorities, and returns them.
+    """
+    session_id = credentials.credentials
+    refreshed_tokens = {}
+    
+    # Overwrite the request accounts with validated credentials from the Redis session
+    payload.accounts = accounts
+
+    # 1. Fetch raw emails for each account in parallel
+    all_emails = await _fetch_account_emails(payload.accounts, payload.include_read, refreshed_tokens, session_id)
         
     if all_emails:
         background_tasks.add_task(trigger_meeting_detection, all_emails)
@@ -234,66 +376,7 @@ async def fetch_and_prioritize_emails(
     read_emails = [e for e in all_emails if e.get("read_status") == "read"]
     
     # 3. Check database cache for unread emails
-    cached_unread_emails = []
-    uncached_unread_emails = []
-    
-    if unread_emails:
-        from database import db as pg_db
-        email_ids = [e.get("id") for e in unread_emails]
-        try:
-            rows = await pg_db.fetch(
-                "SELECT * FROM prioritized_emails WHERE email_id = ANY($1::varchar[])",
-                email_ids
-            )
-            cache_map = {row["email_id"]: row for row in rows}
-            
-            for email in unread_emails:
-                email_id = email.get("id")
-                if email_id in cache_map:
-                    db_row = cache_map[email_id]
-                    matched_rules = db_row["matched_rules"]
-                    if isinstance(matched_rules, str):
-                        try:
-                            matched_rules = json.loads(matched_rules)
-                        except Exception:
-                            matched_rules = []
-                            
-                    email["rule_analysis"] = {
-                        "rule_score": db_row["rule_score"],
-                        "matched_rules": matched_rules
-                    }
-                    
-                    if db_row["ai_priority"] is not None:
-                        action_items = db_row.get("action_items")
-                        if isinstance(action_items, str):
-                            try:
-                                action_items = json.loads(action_items)
-                            except Exception:
-                                action_items = []
-                        elif not isinstance(action_items, list):
-                            action_items = []
-                        email["ai_analysis"] = {
-                            "summary": db_row["ai_summary"],
-                            "priority": db_row["ai_priority"],
-                            "reply": db_row["ai_reply"],
-                            "is_spam_false_positive": db_row["is_spam_false_positive"],
-                            "spam_analysis_reason": db_row["spam_analysis_reason"],
-                            "is_meeting_request": db_row["is_meeting_request"],
-                            "has_deadline": db_row["has_deadline"],
-                            "deadline_date": db_row["deadline_date"],
-                            "action_items": action_items
-                        }
-                    else:
-                        email["ai_analysis"] = None
-                        
-                    email["final_priority"] = db_row["final_priority"]
-                    email["final_score"] = db_row["final_score"]
-                    cached_unread_emails.append(email)
-                else:
-                    uncached_unread_emails.append(email)
-        except Exception as e:
-            logger.error(f"Error checking prioritized_emails database cache: {str(e)}")
-            uncached_unread_emails = unread_emails
+    cached_unread_emails, uncached_unread_emails = await _enrich_cached_emails(unread_emails)
     
     # 4. Analyze uncached unread emails (rules engine + AI)
     if uncached_unread_emails:
@@ -329,67 +412,9 @@ async def fetch_and_prioritize_emails(
                 # Compute hybrid priority for each uncached email
                 for email in uncached_unread_emails:
                     email_id = email.get("id")
-                    
                     r_info = rule_data.get(email_id, {"rule_score": 0, "matched_rules": []})
-                    email["rule_analysis"] = {
-                        "rule_score": r_info.get("rule_score", 0),
-                        "matched_rules": r_info.get("matched_rules", [])
-                    }
-                    
                     ai_info = ai_data.get(email_id)
-                    if ai_info:
-                        email["ai_analysis"] = {
-                            "summary": ai_info.get("summary"),
-                            "priority": ai_info.get("priority"),
-                            "reply": ai_info.get("reply"),
-                            "is_spam_false_positive": ai_info.get("is_spam_false_positive", False),
-                            "spam_analysis_reason": ai_info.get("spam_analysis_reason", ""),
-                            "is_meeting_request": ai_info.get("is_meeting_request", False),
-                            "has_deadline": ai_info.get("has_deadline", False),
-                            "deadline_date": ai_info.get("deadline_date", ""),
-                            "action_items": ai_info.get("action_items", [])
-                        }
-                    else:
-                        email["ai_analysis"] = None
-                        
-                    # Calculate Scores:
-                    # AI Score: Critical/High=30, Medium=15, Low=0. Boost meeting (+10), deadline (+10)
-                    ai_score = 0
-                    if email["ai_analysis"]:
-                        ai_priority = email["ai_analysis"].get("priority", "Low")
-                        if ai_priority == "High" or ai_priority == "Critical":
-                            ai_score = 30
-                        elif ai_priority == "Medium":
-                            ai_score = 15
-                            
-                        if email["ai_analysis"].get("is_meeting_request"):
-                            ai_score += 10
-                        if email["ai_analysis"].get("has_deadline"):
-                            ai_score += 10
-                            
-                    rule_score = email["rule_analysis"].get("rule_score", 0)
-                    preference_score = 0
-                    
-                    # Spam folder penalty/adjustment
-                    if email.get("folder") == "SPAM":
-                        if email["ai_analysis"] and email["ai_analysis"].get("is_spam_false_positive"):
-                            preference_score += 10
-                        else:
-                            ai_score = 0
-                            rule_score = 0
-                            
-                    final_score = ai_score + rule_score + preference_score
-                    
-                    if final_score >= 70:
-                        email["final_priority"] = "Critical"
-                    elif final_score >= 45:
-                        email["final_priority"] = "High"
-                    elif final_score >= 20:
-                        email["final_priority"] = "Medium"
-                    else:
-                        email["final_priority"] = "Low"
-                        
-                    email["final_score"] = final_score
+                    _compute_hybrid_priority(email, r_info, ai_info)
                 
                 # Save new evaluations in background only if AI Service call succeeded
                 if isinstance(ai_res, httpx.Response) and ai_res.status_code == 200:
@@ -397,8 +422,8 @@ async def fetch_and_prioritize_emails(
                 else:
                     logger.warning("Skipping DB cache write for unread emails due to transient AI service failure.")
                 
-            except Exception as e:
-                logger.error(f"Error during orchestrator batch evaluation: {str(e)}")
+            except Exception:
+                logger.exception("Error during orchestrator batch evaluation")
                 for email in uncached_unread_emails:
                     email["rule_analysis"] = None
                     email["ai_analysis"] = None
@@ -426,8 +451,8 @@ async def fetch_and_prioritize_emails(
 @router.get("/search", response_model=GetEmailsResponse)
 async def search_emails(
     q: str = Query(..., description="Gmail search query string"),
-    accounts: List[AccountPayload] = Depends(get_session_accounts),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None,
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)] = None
 ):
     """
     Search emails across accounts using Gmail's query parameters.
@@ -474,8 +499,8 @@ async def search_emails(
                                         if sa.get("email") == acc.email:
                                             sa["access_token"] = new_token
                                     await redis_client.setex(session_key, 3600, json.dumps(sess_accs))
-                            except Exception as ex:
-                                logger.error(f"Failed to update session token in Redis: {str(ex)}")
+                            except Exception:
+                                logger.exception("Failed to update session token in Redis")
 
                         # Retry the request with the new access token
                         search_body["accounts"][0]["access_token"] = access_token
@@ -490,8 +515,8 @@ async def search_emails(
                 else:
                     logger.error(f"Gmail Service returned {response.status_code} during search for {acc.email}: {response.text}")
                     return []
-            except Exception as e:
-                logger.error(f"Orchestrator error searching emails for {acc.email}: {str(e)}")
+            except Exception:
+                logger.exception(f"Orchestrator error searching emails for {acc.email}")
                 return []
                   
     tasks = [process_account_search(acc) for acc in accounts]
@@ -513,8 +538,8 @@ async def search_emails(
             email_ids
         )
         cache_map = {row["email_id"]: row for row in rows}
-    except Exception as e:
-        logger.error(f"Database error fetching search enrichments: {str(e)}")
+    except Exception:
+        logger.exception("Database error fetching search enrichments")
         cache_map = {}
         
     for email in all_emails:
@@ -560,6 +585,104 @@ async def search_emails(
     
     return GetEmailsResponse(emails=all_emails, refreshed_tokens=refreshed_tokens)
 
+
+async def _create_action_item_tasks(
+    pg_db,
+    email_id: str,
+    user_id: str,
+    sender: str,
+    subject: str,
+    ai_analysis: Optional[dict],
+    existing_tasks: set
+) -> None:
+    if ai_analysis and isinstance(ai_analysis, dict):
+        action_items = ai_analysis.get("action_items", [])
+        for item in action_items:
+            if not item or not item.strip():
+                continue
+            if (email_id, "email_action_item", item) not in existing_tasks:
+                try:
+                    await pg_db.execute(
+                        """
+                        INSERT INTO user_tasks (user_id, task_source, email_id, title, description, status)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        """,
+                        user_id,
+                        "email_action_item",
+                        email_id,
+                        item,
+                        f"Extracted from email from {sender} subject: '{subject}'",
+                        "pending"
+                    )
+                    logger.info(f"Created AI action item task for email {email_id}: {item}")
+                except Exception:
+                    logger.exception("Failed to insert AI task")
+
+
+async def _create_no_reply_tasks(
+    pg_db,
+    client: httpx.AsyncClient,
+    thread_emails: List[dict],
+    accounts: List[AccountPayload],
+    existing_tasks: set
+) -> None:
+    if not thread_emails:
+        return
+
+    async def check_reply_task(email: dict, token: str):
+        thread_id = email.get("thread_id")
+        if not thread_id:
+            return False
+        try:
+            res = await client.get(
+                f"{settings.GMAIL_SERVICE_URL}/threads/{thread_id}/has-reply",
+                params={"access_token": token},
+                timeout=10.0
+            )
+            if res.status_code == 200:
+                return res.json().get("has_reply", False)
+        except Exception:
+            logger.exception(f"Failed to check reply status for thread {thread_id}")
+        return False
+
+    thread_checks = []
+    valid_thread_emails = []
+    for email in thread_emails:
+        user_id = email.get("account_email", "unknown")
+        token = next((acc.access_token for acc in accounts if acc.email == user_id), None)
+        if token:
+            thread_checks.append(check_reply_task(email, token))
+            valid_thread_emails.append(email)
+
+    if thread_checks:
+        results = await asyncio.gather(*thread_checks)
+        for email, has_reply in zip(valid_thread_emails, results):
+            if has_reply is False:
+                email_id = email.get("id")
+                user_id = email.get("account_email", "unknown")
+                subject = email.get("subject", "No Subject")
+                sender = email.get("sender", "Unknown Sender")
+                no_reply_title = f"Reply to: {subject}"
+                
+                if (email_id, "email_no_reply", no_reply_title) not in existing_tasks:
+                    try:
+                        await pg_db.execute(
+                            """
+                            INSERT INTO user_tasks (user_id, task_source, email_id, title, description, status)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                            """,
+                            user_id,
+                            "email_no_reply",
+                            email_id,
+                            no_reply_title,
+                            f"You have not replied to this email thread from {sender}.",
+                            "pending"
+                        )
+                        logger.info(f"Created No-Reply task for email {email_id}: {no_reply_title}")
+                    except Exception:
+                        logger.exception("Failed to insert No-Reply task")
+
+
 async def generate_email_tasks_in_background(emails: List[dict], accounts: List[AccountPayload]):
     """
     Scans unread emails for AI action items or no-reply threads, creating tasks in user_tasks.
@@ -577,30 +700,12 @@ async def generate_email_tasks_in_background(emails: List[dict], accounts: List[
             email_ids
         )
         existing_tasks = {(r["email_id"], r["task_source"], r["title"]) for r in rows}
-    except Exception as e:
-        logger.error(f"Failed to fetch existing tasks: {str(e)}")
+    except Exception:
+        logger.exception("Failed to fetch existing tasks")
         existing_tasks = set()
         
-    # We will gather all thread check tasks
-    thread_checks = []
     thread_emails = []
     
-    async def check_reply_task(client: httpx.AsyncClient, email: dict, token: str):
-        thread_id = email.get("thread_id")
-        if not thread_id:
-            return None
-        try:
-            res = await client.get(
-                f"{settings.GMAIL_SERVICE_URL}/threads/{thread_id}/has-reply",
-                params={"access_token": token},
-                timeout=10.0
-            )
-            if res.status_code == 200:
-                return res.json().get("has_reply", False)
-        except Exception as e:
-            logger.error(f"Failed to check reply status for thread {thread_id}: {str(e)}")
-        return False
-
     async with httpx.AsyncClient() as client:
         for email in emails:
             email_id = email.get("id")
@@ -615,65 +720,13 @@ async def generate_email_tasks_in_background(emails: List[dict], accounts: List[
 
             # 1. Check AI action items
             ai_analysis = email.get("ai_analysis")
-            if ai_analysis and isinstance(ai_analysis, dict):
-                action_items = ai_analysis.get("action_items", [])
-                for item in action_items:
-                    if not item or not item.strip():
-                        continue
-                    # Unique check
-                    if (email_id, "email_action_item", item) not in existing_tasks:
-                        try:
-                            await pg_db.execute(
-                                """
-                                INSERT INTO user_tasks (user_id, task_source, email_id, title, description, status)
-                                VALUES ($1, $2, $3, $4, $5, $6)
-                                """,
-                                user_id,
-                                "email_action_item",
-                                email_id,
-                                item,
-                                f"Extracted from email from {sender} subject: '{subject}'",
-                                "pending"
-                            )
-                            logger.info(f"Created AI action item task for email {email_id}: {item}")
-                        except Exception as ex:
-                            logger.error(f"Failed to insert AI task: {str(ex)}")
+            await _create_action_item_tasks(pg_db, email_id, user_id, sender, subject, ai_analysis, existing_tasks)
 
             # 2. Check no-reply status (only for emails classified as Critical, High, or Medium priority)
             if email.get("final_priority") in ("Critical", "High", "Medium"):
-                no_reply_title = f"Reply to: {subject}"
-                if (email_id, "email_no_reply", no_reply_title) not in existing_tasks:
-                    # Add to threads we need to check
-                    thread_emails.append(email)
-                    thread_checks.append(check_reply_task(client, email, token))
+                thread_emails.append(email)
 
-        if thread_checks:
-            results = await asyncio.gather(*thread_checks)
-            for email, has_reply in zip(thread_emails, results):
-                if has_reply is False:
-                    # Create no reply task
-                    email_id = email.get("id")
-                    user_id = email.get("account_email", "unknown")
-                    subject = email.get("subject", "No Subject")
-                    sender = email.get("sender", "Unknown Sender")
-                    no_reply_title = f"Reply to: {subject}"
-                    
-                    try:
-                        await pg_db.execute(
-                            """
-                            INSERT INTO user_tasks (user_id, task_source, email_id, title, description, status)
-                            VALUES ($1, $2, $3, $4, $5, $6)
-                            """,
-                            user_id,
-                            "email_no_reply",
-                            email_id,
-                            no_reply_title,
-                            f"You have not replied to this email thread from {sender}.",
-                            "pending"
-                        )
-                        logger.info(f"Created No-Reply task for email {email_id}: {no_reply_title}")
-                    except Exception as ex:
-                        logger.error(f"Failed to insert No-Reply task: {str(ex)}")
+        await _create_no_reply_tasks(pg_db, client, thread_emails, accounts, existing_tasks)
 
 async def perform_gmail_action(
     id: str,
@@ -721,7 +774,7 @@ async def perform_gmail_action(
 async def mark_read(
     id: str,
     email: Optional[str] = None,
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     """
     Removes the UNREAD label from a message.
@@ -732,7 +785,7 @@ async def mark_read(
 async def mark_unread(
     id: str,
     email: Optional[str] = None,
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     """
     Adds the UNREAD label back to a message.
@@ -743,7 +796,7 @@ async def mark_unread(
 async def move_to_inbox(
     id: str,
     email: Optional[str] = None,
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     """
     Moves an email from Spam back to the Inbox.
@@ -755,7 +808,7 @@ async def mark_safe(
     id: str,
     payload: MarkSafeRequest,
     email: Optional[str] = None,
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     """
     Marks the sender of a spam email as safe (adds to VIP rules) and moves the email to Inbox.
@@ -777,8 +830,8 @@ async def mark_safe(
                         custom_senders.append(payload.sender_email)
                         rules["custom_senders"] = custom_senders
                         await client.post(f"{settings.RULE_ENGINE_SERVICE_URL}/rules", params={"user_id": u_id}, json=rules)
-            except Exception as e:
-                logger.error(f"Safe sender registration failed for {u_id}: {str(e)}")
+            except Exception:
+                logger.exception(f"Safe sender registration failed for {u_id}")
                 
     return await perform_gmail_action(id, "move-to-inbox", accounts, email)
 
@@ -786,7 +839,7 @@ async def mark_safe(
 @router.get("/config/rules")
 async def get_rules_proxy(
     user_id: Optional[str] = None,
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     """
     Proxies GET rules request to rule engine.
@@ -810,7 +863,7 @@ async def get_rules_proxy(
 async def update_rules_proxy(
     rules: dict,
     user_id: Optional[str] = None,
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     """
     Proxies POST rules request to rule engine.

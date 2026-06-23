@@ -24,7 +24,7 @@ if settings.APPLICATIONINSIGHTS_CONNECTION_STRING:
         configure_azure_monitor(connection_string=settings.APPLICATIONINSIGHTS_CONNECTION_STRING)
         logger.info("Azure Monitor OpenTelemetry configured successfully for api-service.")
     except Exception as e:
-        logger.error(f"Failed to configure Azure Monitor OpenTelemetry: {str(e)}")
+        logger.exception("Failed to configure Azure Monitor OpenTelemetry")
 
 from database import db as pg_db, initialize_db as pg_initialize_db
 
@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
     try:
         await pg_initialize_db()
     except Exception as ex:
-        logger.error(f"Failed to initialize PostgreSQL database on startup: {str(ex)}")
+        logger.exception("Failed to initialize PostgreSQL database on startup")
     yield
     # Shutdown: Close pools
     logger.info("Shutting down api-service Gateway...")
@@ -181,7 +181,10 @@ async def _update_email_cache(email_id: str, user_id: str, ai_analysis: dict, ai
                 logger.info("Created on-demand AI task: %s", item)
 
 
-@app.post("/ai/process")
+@app.post("/ai/process", responses={
+    500: {"description": "AI_SERVICE_URL misconfigured or internal error"},
+    502: {"description": "AI service unavailable or returned an error"},
+})
 async def process_email(payload: dict):
     """
     Gateway endpoint for processing a single email.
@@ -222,7 +225,7 @@ async def process_email(payload: dict):
                     ai_score = _compute_ai_score(ai_analysis)
                     await _update_email_cache(email_id, user_id, ai_analysis, ai_score)
                 except Exception as db_ex:
-                    logger.error("Failed to update on-demand cache: %s", str(db_ex))
+                    logger.exception("Failed to update on-demand cache")
 
             return ai_analysis
         except httpx.HTTPError as e:
@@ -239,7 +242,7 @@ async def health(response: Response):
         await client.ping()
         redis_status = "healthy"
     except Exception as e:
-        logger.error(f"Health check failed due to Redis connection error: {str(e)}", exc_info=True)
+        logger.exception("Health check failed due to Redis connection error")
         redis_status = f"unhealthy: {str(e)}"
 
     if redis_status != "healthy":
@@ -278,14 +281,14 @@ async def ready(response: Response):
         client = await redis_manager.get_client()
         await client.ping()
     except Exception as e:
-        logger.error(f"Readiness check failed - Redis connection error: {str(e)}")
+        logger.exception("Readiness check failed - Redis connection error")
         errors.append(f"Redis: {str(e)}")
         
     # Check PostgreSQL
     try:
         await pg_db.fetchval("SELECT 1")
     except Exception as e:
-        logger.error(f"Readiness check failed - PostgreSQL connection error: {str(e)}")
+        logger.exception("Readiness check failed - PostgreSQL connection error")
         errors.append(f"PostgreSQL: {str(e)}")
         
     if errors:
@@ -303,4 +306,4 @@ async def ready(response: Response):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000)

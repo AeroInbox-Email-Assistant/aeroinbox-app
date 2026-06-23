@@ -6,12 +6,14 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+_POOL_AUTH_WARN = "Postgres Auth error encountered in api-service, refreshing pool..."
+
 class PostgresPoolManager:
     def __init__(self):
         self.pool = None
         self.token_expiry = None
 
-    async def get_password(self) -> str:
+    def get_password(self) -> str:
         """
         Dynamically fetches an Entra ID access token if DB_AUTH_METHOD is set to "entra".
         Otherwise, returns the password from Key Vault / settings.
@@ -26,13 +28,13 @@ class PostgresPoolManager:
                 logger.info(f"Retrieved Entra ID token for api-service, expires at: {self.token_expiry}")
                 return token_obj.token
             except Exception as e:
-                logger.error(f"Failed to fetch Entra ID token in api-service: {str(e)}")
+                logger.exception("Failed to fetch Entra ID token in api-service")
                 return settings.DB_PASSWORD
         else:
             return settings.DB_PASSWORD
 
     async def initialize_pool(self):
-        password = await self.get_password()
+        password = self.get_password()
         ssl_arg = "require" if settings.DB_SSL.lower() in ("true", "1", "yes") else None
         
         self.pool = await asyncpg.create_pool(
@@ -72,7 +74,7 @@ class PostgresPoolManager:
         try:
             return await pool.execute(query, *args)
         except asyncpg.exceptions.InvalidAuthorizationSpecificationError:
-            logger.warning("Postgres Auth error encountered in api-service, refreshing pool...")
+            logger.warning(_POOL_AUTH_WARN)
             await self.close()
             pool = await self.get_pool()
             return await pool.execute(query, *args)
@@ -82,7 +84,7 @@ class PostgresPoolManager:
         try:
             return await pool.fetch(query, *args)
         except asyncpg.exceptions.InvalidAuthorizationSpecificationError:
-            logger.warning("Postgres Auth error encountered in api-service, refreshing pool...")
+            logger.warning(_POOL_AUTH_WARN)
             await self.close()
             pool = await self.get_pool()
             return await pool.fetch(query, *args)
@@ -92,7 +94,7 @@ class PostgresPoolManager:
         try:
             return await pool.fetchrow(query, *args)
         except asyncpg.exceptions.InvalidAuthorizationSpecificationError:
-            logger.warning("Postgres Auth error encountered in api-service, refreshing pool...")
+            logger.warning(_POOL_AUTH_WARN)
             await self.close()
             pool = await self.get_pool()
             return await pool.fetchrow(query, *args)
@@ -102,7 +104,7 @@ class PostgresPoolManager:
         try:
             return await pool.fetchval(query, *args)
         except asyncpg.exceptions.InvalidAuthorizationSpecificationError:
-            logger.warning("Postgres Auth error encountered in api-service, refreshing pool...")
+            logger.warning(_POOL_AUTH_WARN)
             await self.close()
             pool = await self.get_pool()
             return await pool.fetchval(query, *args)

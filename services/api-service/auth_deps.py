@@ -37,5 +37,5 @@ async def get_session_accounts(credentials: HTTPAuthorizationCredentials = Depen
             raise HTTPException(status_code=401, detail="Malformed session data.")
         return [AccountPayload(**a) for a in accs]
     except Exception as e:
-        logger.error(f"Failed to parse session accounts: {str(e)}")
+        logger.exception("Failed to parse session accounts")
         raise HTTPException(status_code=401, detail="Invalid session data format.")

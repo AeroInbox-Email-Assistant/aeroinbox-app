@@ -40,7 +40,7 @@ class RedisManager:
             try:
                 await self.client.aclose()
             except Exception as e:
-                logger.error(f"Error closing Redis client: {str(e)}")
+                logger.exception("Error closing Redis client")
             self.client = None
             logger.info("Redis connection pool closed.")
 

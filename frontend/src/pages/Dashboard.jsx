@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import PropTypes from "prop-types";
 import { useNavigate } from "react-router-dom";
 import API from "../services/api";
 import Sidebar from "../components/Sidebar";
@@ -8,11 +9,11 @@ import AIInsights from "../components/AIInsights";
 
 const validateId = (id) => {
   if (typeof id !== "number" && typeof id !== "string") {
-    throw new Error("Invalid ID type");
+    throw new TypeError("Invalid ID type");
   }
   const clean = String(id).trim();
   if (!/^[a-zA-Z0-9_-]+$/.test(clean)) {
-    throw new Error("Security check failed: invalid characters in ID");
+    throw new TypeError("Security check failed: invalid characters in ID");
   }
   return encodeURIComponent(clean);
 };
@@ -132,6 +133,21 @@ function MeetingCard({ meet, onAcceptUpdate, onRemoveMeeting }) {
     </div>
   );
 }
+
+MeetingCard.propTypes = {
+  meet: PropTypes.shape({
+    id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
+    start_datetime: PropTypes.string.isRequired,
+    meeting_platform: PropTypes.string,
+    meeting_title: PropTypes.string,
+    organizer: PropTypes.string,
+    participants: PropTypes.arrayOf(PropTypes.object),
+    meeting_url: PropTypes.string,
+    status: PropTypes.string,
+  }).isRequired,
+  onAcceptUpdate: PropTypes.func.isRequired,
+  onRemoveMeeting: PropTypes.func.isRequired,
+};
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -1404,11 +1420,10 @@ export default function Dashboard() {
 
         {/* Dynamic content split panel */}
         <div className="flex-1 flex min-h-0">
-          {activeSection === "meetings" ? (
-            renderMeetingsDashboard()
-          ) : activeSection === "tasks" ? (
-            renderTasksDashboard()
-          ) : (
+          {(() => {
+            if (activeSection === "meetings") return renderMeetingsDashboard();
+            if (activeSection === "tasks") return renderTasksDashboard();
+            return (
             <>
               {/* LEFT PANEL: Email List Column */}
               <div className="w-[380px] border-r border-slate-200 dark:border-slate-800/60 bg-white dark:bg-[#090d16]/30 flex flex-col min-h-0 transition-colors duration-150">
@@ -1741,11 +1756,12 @@ export default function Dashboard() {
             <div className="flex-1 overflow-y-auto space-y-5 pr-1">
               {/* Custom sender VIPs list */}
               <div className="space-y-2">
-                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                <label htmlFor="custom-sender-input" className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                   Custom VIP Senders
                 </label>
                 <div className="flex space-x-2">
                   <input
+                    id="custom-sender-input"
                     type="text"
                     placeholder="email@example.com or name snippet"
                     value={newCustomSender}
@@ -1765,9 +1781,9 @@ export default function Dashboard() {
                       No custom senders added yet.
                     </span>
                   ) : (
-                    rulesConfig.custom_senders.map((sender, idx) => (
+                    rulesConfig.custom_senders.map((sender) => (
                       <span
-                        key={idx}
+                        key={sender}
                         className="inline-flex items-center space-x-1 px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] font-bold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700/50"
                       >
                         <span>{sender}</span>
@@ -1785,11 +1801,12 @@ export default function Dashboard() {
 
               {/* Custom keywords lists */}
               <div className="space-y-2">
-                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                <label htmlFor="custom-keyword-input" className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                   Custom Priority Keywords
                 </label>
                 <div className="flex space-x-2">
                   <input
+                    id="custom-keyword-input"
                     type="text"
                     placeholder="urgent word or category tag"
                     value={newCustomKeyword}
@@ -1809,9 +1826,9 @@ export default function Dashboard() {
                       No custom keywords added yet.
                     </span>
                   ) : (
-                    rulesConfig.custom_keywords.map((kw, idx) => (
+                    rulesConfig.custom_keywords.map((kw) => (
                       <span
-                        key={idx}
+                        key={kw}
                         className="inline-flex items-center space-x-1 px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] font-bold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700/50"
                       >
                         <span>{kw}</span>
@@ -1829,7 +1846,7 @@ export default function Dashboard() {
 
               {/* Folder Boost sliders */}
               <div className="space-y-4 pt-2">
-                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                <label htmlFor="inbox-boost-range" className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
                   Priority Preference Boosts
                 </label>
 
@@ -1843,6 +1860,7 @@ export default function Dashboard() {
                     </span>
                   </div>
                   <input
+                    id="inbox-boost-range"
                     type="range"
                     min="-30"
                     max="30"
@@ -1852,7 +1870,7 @@ export default function Dashboard() {
                         ...prev,
                         preference_boosts: {
                           ...prev.preference_boosts,
-                          inbox_boost: parseInt(e.target.value),
+                          inbox_boost: Number.parseInt(e.target.value, 10),
                         },
                       }))
                     }
@@ -1879,7 +1897,7 @@ export default function Dashboard() {
                         ...prev,
                         preference_boosts: {
                           ...prev.preference_boosts,
-                          spam_boost: parseInt(e.target.value),
+                          spam_boost: Number.parseInt(e.target.value, 10),
                         },
                       }))
                     }
@@ -1899,9 +1917,9 @@ export default function Dashboard() {
                       Standard VIPs (+30 pts)
                     </span>
                     <div className="flex flex-wrap gap-1">
-                      {rulesConfig.vip_senders.map((v, i) => (
+                      {rulesConfig.vip_senders.map((v) => (
                         <span
-                          key={i}
+                          key={v}
                           className="px-1.5 py-0.5 rounded bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800"
                         >
                           {v}
@@ -1914,9 +1932,9 @@ export default function Dashboard() {
                       Target Domains (+20 pts)
                     </span>
                     <div className="flex flex-wrap gap-1">
-                      {rulesConfig.domains.map((d, i) => (
+                      {rulesConfig.domains.map((d) => (
                         <span
-                          key={i}
+                          key={d}
                           className="px-1.5 py-0.5 rounded bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800"
                         >
                           @{d}

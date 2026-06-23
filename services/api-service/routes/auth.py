@@ -19,7 +19,9 @@ class TokenRefreshRequest(BaseModel):
     email: Optional[str] = None
     session_id: Optional[str] = None
 
-@router.get("/login")
+@router.get("/login", responses={
+    500: {"description": "Google OAuth credentials (GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET) are not configured."}
+})
 def login(session_id: Optional[str] = None):
     """
     Redirects the user to the Google OAuth2 consent screen.
@@ -47,20 +49,8 @@ def login(session_id: Optional[str] = None):
     url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
     return RedirectResponse(url)
 
-@router.get("/callback")
-async def callback(code: str = None, error: str = None, state: str = None):
-    """
-    Handles the redirect callback from Google OAuth.
-    Exchanges the authorization code for tokens, saves credentials in Redis,
-    and redirects to the frontend with the session_id.
-    """
-    if error:
-        return RedirectResponse(f"{settings.FRONTEND_URL}/oauth-callback?error={urllib.parse.quote(error)}")
 
-    if not code:
-        raise HTTPException(status_code=400, detail="Missing authorization code")
-
-    # Exchange authorization code for tokens
+async def _exchange_google_code(code: str) -> tuple[int, dict]:
     token_url = "https://oauth2.googleapis.com/token"
     data = {
         "client_id": settings.GOOGLE_CLIENT_ID,
@@ -69,25 +59,12 @@ async def callback(code: str = None, error: str = None, state: str = None):
         "redirect_uri": settings.GOOGLE_REDIRECT_URI,
         "grant_type": "authorization_code",
     }
-
     async with httpx.AsyncClient() as client:
-        try:
-            token_response = await client.post(token_url, data=data)
-            token_data = token_response.json()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to connect to Google OAuth server: {str(e)}")
+        token_response = await client.post(token_url, data=data)
+        return token_response.status_code, token_response.json()
 
-    if token_response.status_code != 200:
-        error_description = token_data.get("error_description", "OAuth authorization code exchange failed.")
-        return RedirectResponse(
-            f"{settings.FRONTEND_URL}/oauth-callback?error={urllib.parse.quote(error_description)}"
-        )
 
-    access_token = token_data.get("access_token")
-    refresh_token = token_data.get("refresh_token", "")
-    
-    # Retrieve user profile using the access token
-    email = ""
+async def _fetch_user_email(access_token: str) -> str:
     async with httpx.AsyncClient() as client:
         try:
             userinfo_response = await client.get(
@@ -96,22 +73,14 @@ async def callback(code: str = None, error: str = None, state: str = None):
             )
             if userinfo_response.status_code == 200:
                 user_info = userinfo_response.json()
-                email = user_info.get("email", "")
-        except Exception as e:
-            logger.error(f"Error fetching user info: {str(e)}")
+                return user_info.get("email", "")
+        except Exception:
+            logger.exception("Error fetching user info")
+    return ""
 
-    if not email:
-        return RedirectResponse(
-            f"{settings.FRONTEND_URL}/oauth-callback?error={urllib.parse.quote('Could not retrieve user email from Google.')}"
-        )
 
-    # Determine or generate session ID
-    session_id = state if (state and state != "new" and len(state) >= 10) else uuid.uuid4().hex
-
-    # Read existing accounts from Redis session if it exists
-    redis_client = await redis_manager.get_client()
+async def _upsert_session(redis_client, session_id: str, email: str, access_token: str, refresh_token: str):
     session_key = f"session:{session_id}"
-    
     existing_accounts = []
     session_data = await redis_client.get(session_key)
     if session_data:
@@ -145,16 +114,59 @@ async def callback(code: str = None, error: str = None, state: str = None):
 
     # Save the refresh token in Redis under refresh:{email} persistently if returned
     if refresh_token:
-        await redis_client.setex(f"refresh:{email}", 2592000, refresh_token) # 30 days TTL
+        await redis_client.setex(f"refresh:{email}", 2592000, refresh_token)  # 30 days TTL
     else:
         # Check if we already have it stored
         stored_refresh = await redis_client.get(f"refresh:{email}")
         if stored_refresh:
             # Re-propagate to session accounts if empty
-            for acc in updated_accounts:
-                if acc.get("email") == email and not acc.get("refresh_token"):
-                    acc["refresh_token"] = stored_refresh
+            for sa in updated_accounts:
+                if sa.get("email") == email and not sa.get("refresh_token"):
+                    sa["refresh_token"] = stored_refresh
             await redis_client.setex(session_key, 3600, json.dumps(updated_accounts))
+
+
+@router.get("/callback", responses={
+    400: {"description": "Missing authorization code or OAuth exchange failed"},
+    500: {"description": "Failed to connect to Google OAuth server"}
+})
+async def callback(code: str = None, error: str = None, state: str = None):
+    """
+    Handles the redirect callback from Google OAuth.
+    Exchanges the authorization code for tokens, saves credentials in Redis,
+    and redirects to the frontend with the session_id.
+    """
+    if error:
+        return RedirectResponse(f"{settings.FRONTEND_URL}/oauth-callback?error={urllib.parse.quote(error)}")
+
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing authorization code")
+
+    try:
+        status_code, token_data = await _exchange_google_code(code)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to connect to Google OAuth server: {str(e)}")
+
+    if status_code != 200:
+        error_description = token_data.get("error_description", "OAuth authorization code exchange failed.")
+        return RedirectResponse(
+            f"{settings.FRONTEND_URL}/oauth-callback?error={urllib.parse.quote(error_description)}"
+        )
+
+    access_token = token_data.get("access_token")
+    refresh_token = token_data.get("refresh_token", "")
+    
+    email = await _fetch_user_email(access_token)
+    if not email:
+        return RedirectResponse(
+            f"{settings.FRONTEND_URL}/oauth-callback?error={urllib.parse.quote('Could not retrieve user email from Google.')}"
+        )
+
+    # Determine or generate session ID
+    session_id = state if (state and state != "new" and len(state) >= 10) else uuid.uuid4().hex
+
+    redis_client = await redis_manager.get_client()
+    await _upsert_session(redis_client, session_id, email, access_token, refresh_token)
 
     # Redirect user to frontend. Mask the actual tokens inside the session ID.
     redirect_url = (
@@ -165,7 +177,63 @@ async def callback(code: str = None, error: str = None, state: str = None):
     )
     return RedirectResponse(redirect_url)
 
-@router.post("/refresh")
+
+async def _call_google_refresh_api(refresh_token: str) -> tuple[int, dict]:
+    token_url = "https://oauth2.googleapis.com/token"
+    data = {
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "client_secret": settings.GOOGLE_CLIENT_SECRET,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(token_url, data=data)
+        return response.status_code, response.json()
+
+
+async def _update_refresh_session(redis_client, session_id: Optional[str], email: str, new_access_token: str, refresh_token: str) -> str:
+    if session_id:
+        session_key = f"session:{session_id}"
+        session_data = await redis_client.get(session_key)
+        existing_accounts = []
+        if session_data:
+            try:
+                existing_accounts = json.loads(session_data)
+            except Exception:
+                pass
+
+        updated = False
+        for acc in existing_accounts:
+            if acc.get("email") == email:
+                acc["access_token"] = new_access_token
+                updated = True
+                break
+
+        if not updated:
+            existing_accounts.append({
+                "email": email,
+                "access_token": new_access_token,
+                "refresh_token": refresh_token
+            })
+
+        await redis_client.setex(session_key, 3600, json.dumps(existing_accounts))
+    else:
+        session_id = uuid.uuid4().hex
+        session_key = f"session:{session_id}"
+        accounts = [{
+            "email": email,
+            "access_token": new_access_token,
+            "refresh_token": refresh_token
+        }]
+        await redis_client.setex(session_key, 3600, json.dumps(accounts))
+    return session_id
+
+
+@router.post("/refresh", responses={
+    400: {"description": "Missing email or session details"},
+    401: {"description": "No refresh token found"},
+    500: {"description": "Failed to connect to Google token server or general refresh error"}
+})
 async def refresh_session(payload: TokenRefreshRequest):
     """
     Refreshes session access tokens utilizing stored refresh tokens in Redis.
@@ -196,66 +264,21 @@ async def refresh_session(payload: TokenRefreshRequest):
         raise HTTPException(status_code=401, detail="No refresh token found. User must re-login.")
 
     # Call Google API to refresh access token
-    token_url = "https://oauth2.googleapis.com/token"
-    data = {
-        "client_id": settings.GOOGLE_CLIENT_ID,
-        "client_secret": settings.GOOGLE_CLIENT_SECRET,
-        "refresh_token": refresh_token,
-        "grant_type": "refresh_token",
-    }
+    try:
+        status_code, response_data = await _call_google_refresh_api(refresh_token)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to connect to Google token server: {str(e)}")
 
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(token_url, data=data)
-            response_data = response.json()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to connect to Google token server: {str(e)}")
-
-    if response.status_code != 200:
+    if status_code != 200:
         raise HTTPException(
-            status_code=response.status_code,
+            status_code=status_code,
             detail=response_data.get("error_description", "Failed to refresh Google token")
         )
 
     new_access_token = response_data.get("access_token")
 
-    # Update access token in session accounts list
-    if session_id:
-        session_key = f"session:{session_id}"
-        session_data = await redis_client.get(session_key)
-        existing_accounts = []
-        if session_data:
-            try:
-                existing_accounts = json.loads(session_data)
-            except Exception:
-                pass
-
-        updated = False
-        for acc in existing_accounts:
-            if acc.get("email") == email:
-                acc["access_token"] = new_access_token
-                updated = True
-                break
-
-        if not updated:
-            existing_accounts.append({
-                "email": email,
-                "access_token": new_access_token,
-                "refresh_token": refresh_token
-            })
-
-        # Save/renew session TTL
-        await redis_client.setex(session_key, 3600, json.dumps(existing_accounts))
-    else:
-        # Generate new session if none was provided
-        session_id = uuid.uuid4().hex
-        session_key = f"session:{session_id}"
-        accounts = [{
-            "email": email,
-            "access_token": new_access_token,
-            "refresh_token": refresh_token
-        }]
-        await redis_client.setex(session_key, 3600, json.dumps(accounts))
+    # Update or create session
+    session_id = await _update_refresh_session(redis_client, session_id, email, new_access_token, refresh_token)
 
     return {
         "session_id": session_id,

@@ -48,11 +48,10 @@ export default function Sidebar({
         <nav className="space-y-1.5">
           <button
             onClick={() => setActiveSection("inbox")}
-            className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg border text-left font-medium text-sm transition-all cursor-pointer ${
-              activeSection === "inbox"
-                ? "bg-indigo-600/10 border-indigo-500/20 text-indigo-600 dark:text-indigo-400"
-                : "border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/30"
-            }`}
+            className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg border text-left font-medium text-sm transition-all cursor-pointer ${activeSection === "inbox"
+              ? "bg-indigo-600/10 border-indigo-500/20 text-indigo-600 dark:text-indigo-400"
+              : "border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/30"
+              }`}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -73,11 +72,10 @@ export default function Sidebar({
 
           <button
             onClick={() => setActiveSection("spam")}
-            className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg border text-left font-medium text-sm transition-all cursor-pointer ${
-              activeSection === "spam"
-                ? "bg-indigo-600/10 border-indigo-500/20 text-indigo-600 dark:text-indigo-400"
-                : "border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/30"
-            }`}
+            className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg border text-left font-medium text-sm transition-all cursor-pointer ${activeSection === "spam"
+              ? "bg-indigo-600/10 border-indigo-500/20 text-indigo-600 dark:text-indigo-400"
+              : "border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/30"
+              }`}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -98,11 +96,10 @@ export default function Sidebar({
 
           <button
             onClick={() => setActiveSection("meetings")}
-            className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg border text-left font-medium text-sm transition-all cursor-pointer ${
-              activeSection === "meetings"
-                ? "bg-indigo-600/10 border-indigo-500/20 text-indigo-600 dark:text-indigo-400"
-                : "border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/30"
-            }`}
+            className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg border text-left font-medium text-sm transition-all cursor-pointer ${activeSection === "meetings"
+              ? "bg-indigo-600/10 border-indigo-500/20 text-indigo-600 dark:text-indigo-400"
+              : "border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/30"
+              }`}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -123,11 +120,10 @@ export default function Sidebar({
 
           <button
             onClick={() => setActiveSection("tasks")}
-            className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg border text-left font-medium text-sm transition-all cursor-pointer ${
-              activeSection === "tasks"
-                ? "bg-indigo-600/10 border-indigo-500/20 text-indigo-600 dark:text-indigo-400"
-                : "border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/30"
-            }`}
+            className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg border text-left font-medium text-sm transition-all cursor-pointer ${activeSection === "tasks"
+              ? "bg-indigo-600/10 border-indigo-500/20 text-indigo-600 dark:text-indigo-400"
+              : "border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/30"
+              }`}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -217,3 +213,4 @@ Sidebar.propTypes = {
   activeSection: PropTypes.string.isRequired,
   setActiveSection: PropTypes.func.isRequired,
 };
+

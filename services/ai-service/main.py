@@ -25,7 +25,7 @@ if settings.APPLICATIONINSIGHTS_CONNECTION_STRING:
         configure_azure_monitor(connection_string=settings.APPLICATIONINSIGHTS_CONNECTION_STRING)
         logger.info("Azure Monitor OpenTelemetry configured successfully for ai-service.")
     except Exception as e:
-        logger.error(f"Failed to configure Azure Monitor OpenTelemetry: {str(e)}")
+        logger.exception("Failed to configure Azure Monitor OpenTelemetry")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -51,7 +51,7 @@ class MeetingProcessRequest(BaseModel):
 class BulkEmailProcessRequest(BaseModel):
     emails: list[dict]
 
-@app.post("/process", response_model=EmailAnalysis)
+@app.post("/process", response_model=EmailAnalysis, responses={500: {"description": "Internal server error during email analysis"}})
 def process_email(payload: EmailProcessRequest):
     """
     Processes a single email content and returns executive summary, priority, and reply suggestion.
@@ -65,7 +65,7 @@ def process_email(payload: EmailProcessRequest):
         logger.exception("Error during email processing")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/process/bulk")
+@app.post("/process/bulk", responses={500: {"description": "Internal server error during bulk email analysis"}})
 def process_emails_bulk(payload: BulkEmailProcessRequest):
     """
     Processes a batch of emails in a single Gemini request and returns analyses dictionary.
@@ -77,7 +77,7 @@ def process_emails_bulk(payload: BulkEmailProcessRequest):
         logger.exception("Error during bulk email processing")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/process/meeting", response_model=MeetingExtractionResponse)
+@app.post("/process/meeting", response_model=MeetingExtractionResponse, responses={500: {"description": "Internal server error during meeting extraction"}})
 def process_meeting(payload: MeetingProcessRequest):
     """
     Analyzes email content and extracts structured meeting details using Gemini.
@@ -128,8 +128,7 @@ def ready(response: Response):
         }
         
     try:
-        req = urllib.request.Request(endpoint, method="GET")
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5):
             pass
         return {
             "status": "ready",
@@ -142,7 +141,7 @@ def ready(response: Response):
             "service": "ai-service"
         }
     except Exception as e:
-        logger.error(f"Readiness check failed - Azure OpenAI not reachable: {str(e)}")
+        logger.exception("Readiness check failed - Azure OpenAI not reachable")
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
             "status": "not ready",
@@ -152,4 +151,4 @@ def ready(response: Response):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000)

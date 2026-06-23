@@ -4,7 +4,7 @@ import hashlib
 import json
 import urllib.request
 import urllib.error
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import google.generativeai as genai
 from pydantic import BaseModel, Field
@@ -59,7 +59,7 @@ def set_cached_email(content_hash: str, response_json: str):
     try:
         conn.execute(
             "INSERT OR REPLACE INTO email_cache (content_hash, response_json, created_at) VALUES (?, ?, ?)",
-            (content_hash, response_json, datetime.utcnow().isoformat())
+            (content_hash, response_json, datetime.now(timezone.utc).isoformat())
         )
         conn.commit()
     except Exception:
@@ -84,7 +84,7 @@ def set_cached_meeting(content_hash: str, response_json: str):
     try:
         conn.execute(
             "INSERT OR REPLACE INTO meeting_cache (content_hash, response_json, created_at) VALUES (?, ?, ?)",
-            (content_hash, response_json, datetime.utcnow().isoformat())
+            (content_hash, response_json, datetime.now(timezone.utc).isoformat())
         )
         conn.commit()
     except Exception:
@@ -210,166 +210,175 @@ def call_openai_compatible_api(url: str, headers: dict, payload: dict) -> str:
             if "choices" in res_json and len(res_json["choices"]) > 0:
                 content = res_json["choices"][0]["message"]["content"]
                 if not content:
-                    raise Exception("Model returned empty completions content.")
+                    raise RuntimeError("Model returned empty completions content.")
                 return content
             else:
-                raise Exception(f"Unexpected API response payload: {res_body}")
+                raise RuntimeError(f"Unexpected API response payload: {res_body}")
     except urllib.error.HTTPError as e:
         try:
             error_body = e.read().decode("utf-8")
-        except Exception:
+        except RuntimeError:
             error_body = "(could not read error body)"
-        raise Exception(f"HTTP Error {e.code}: {e.reason} - {error_body}")
+        raise RuntimeError(f"HTTP Error {e.code}: {e.reason} - {error_body}")
+    except RuntimeError:
+        raise
     except Exception as e:
-        raise Exception(f"LLM request failed: {str(e)}")
+        raise RuntimeError(f"LLM request failed: {str(e)}")
+
+CONTENT_TYPE_JSON = "application/json"
+CHAT_COMPLETIONS_PATH = "/chat/completions"
+_JSON_FORMAT_INSTR = "\nYour output MUST be a raw JSON object conforming strictly to the requested schema. Do not output markdown code fences or conversational text."
+
+
+def _call_gemini(system_instruction: str, prompt: str, schema_class, gemini_key: str) -> str:
+    """Call Google Gemini API."""
+    if not gemini_key or gemini_key.startswith("your_"):
+        raise HTTPException(status_code=500, detail="Gemini API Key is not configured.")
+    genai.configure(api_key=gemini_key)
+    try:
+        model = genai.GenerativeModel(
+            model_name="gemini-flash-latest",
+            system_instruction=system_instruction
+        )
+        generation_config = genai.GenerationConfig(
+            response_mime_type=CONTENT_TYPE_JSON
+        )
+        if schema_class:
+            generation_config.response_schema = schema_class
+        response = model.generate_content(prompt, generation_config=generation_config)
+        if not response.text:
+            raise RuntimeError("Gemini returned empty response.")
+        return response.text
+    except RuntimeError:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"Gemini API invocation failed: {str(e)}")
+
+
+def _call_azure_openai(system_instruction: str, prompt: str, key: str, endpoint: str, deployment: str) -> str:
+    """Call Azure OpenAI chat completions endpoint."""
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+    url = f"{endpoint.rstrip('/')}/openai/deployments/{deployment}{CHAT_COMPLETIONS_PATH}?api-version={api_version}"
+    headers = {"api-key": key, "Content-Type": CONTENT_TYPE_JSON}
+    payload = {
+        "messages": [
+            {"role": "system", "content": system_instruction + _JSON_FORMAT_INSTR},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.0,
+        "response_format": {"type": "json_object"}
+    }
+    return call_openai_compatible_api(url, headers, payload)
+
+
+def _build_foundry_url(base_endpoint: str) -> str:
+    """Normalize Azure AI Foundry endpoint to a chat/completions URL."""
+    url = base_endpoint
+    if CHAT_COMPLETIONS_PATH not in url:
+        base_url = url.split("?")[0].rstrip("/")
+        query_params = url.split("?")[1] if "?" in url else ""
+        if "/models" not in base_url and "/v1" not in base_url:
+            base_url = f"{base_url}/models{CHAT_COMPLETIONS_PATH}"
+        elif "/models" in base_url:
+            base_url = f"{base_url}{CHAT_COMPLETIONS_PATH}"
+        elif "/v1" in base_url:
+            base_url = f"{base_url}{CHAT_COMPLETIONS_PATH}"
+        url = f"{base_url}?{query_params}" if query_params else base_url
+    if "api-version=" not in url:
+        api_version = os.getenv("AZURE_AI_FOUNDRY_API_VERSION", "2024-05-01-preview")
+        separator = "&" if "?" in url else "?"
+        url = f"{url}{separator}api-version={api_version}"
+    return url
+
+
+def _call_azure_ai_foundry(system_instruction: str, prompt: str, key: str, endpoint: str) -> str:
+    """Call Azure AI Foundry chat completions endpoint."""
+    url = _build_foundry_url(endpoint)
+    model_name = os.getenv("AZURE_AI_FOUNDRY_MODEL", "")
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": CONTENT_TYPE_JSON}
+    payload = {
+        "messages": [
+            {"role": "system", "content": system_instruction + _JSON_FORMAT_INSTR},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.0
+    }
+    if model_name:
+        payload["model"] = model_name
+    return call_openai_compatible_api(url, headers, payload)
+
+
+def _call_openai(system_instruction: str, prompt: str, key: str) -> str:
+    """Call OpenAI chat completions endpoint."""
+    api_base = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
+    model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    url = f"{api_base.rstrip('/')}{CHAT_COMPLETIONS_PATH}"
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": CONTENT_TYPE_JSON}
+    format_instr = "\nYour output MUST be a raw JSON object conforming strictly to the requested schema."
+    payload = {
+        "messages": [
+            {"role": "system", "content": system_instruction + format_instr},
+            {"role": "user", "content": prompt}
+        ],
+        "model": model_name,
+        "temperature": 0.0,
+        "response_format": {"type": "json_object"}
+    }
+    return call_openai_compatible_api(url, headers, payload)
+
+
+def _resolve_provider(provider: str, azure_openai_key: str, azure_openai_endpoint: str,
+                      azure_openai_deployment: str, azure_ai_key: str, azure_ai_endpoint: str,
+                      openai_key: str, gemini_key: str) -> tuple[str, str]:
+    """Resolve AI provider and normalise gemini_key. Returns (provider, gemini_key)."""
+    if provider:
+        return provider, gemini_key
+    if azure_openai_key and azure_openai_endpoint and azure_openai_deployment:
+        return "azure_openai", gemini_key
+    if azure_ai_key and azure_ai_endpoint:
+        return "azure_ai_foundry", gemini_key
+    if openai_key and not openai_key.startswith("your_") and not openai_key.startswith("AIza"):
+        return "openai", gemini_key
+    if gemini_key and not gemini_key.startswith("your_"):
+        return "gemini", gemini_key
+    if openai_key and openai_key.startswith("AIza"):
+        return "gemini", openai_key
+    raise HTTPException(
+        status_code=500,
+        detail="No AI Provider keys are configured. Please set GEMINI_API_KEY, AZURE_OPENAI_API_KEY, AZURE_AI_FOUNDRY_API_KEY, or OPENAI_API_KEY."
+    )
+
 
 def query_llm(system_instruction: str, prompt: str, schema_class=None) -> str:
     """
     Routes query to LLM provider resolved from environment.
     Priority: Azure OpenAI -> Azure AI Foundry -> OpenAI -> Gemini (default)
     """
-    provider = os.getenv("AI_PROVIDER", "").lower() or settings.AI_PROVIDER.lower()
-    
+    raw_provider = os.getenv("AI_PROVIDER", "").lower() or settings.AI_PROVIDER.lower()
+
     azure_openai_key = settings.AZURE_OPENAI_API_KEY or os.getenv("AZURE_OPENAI_API_KEY", "")
     azure_openai_endpoint = settings.AZURE_OPENAI_ENDPOINT or os.getenv("AZURE_OPENAI_ENDPOINT", "")
     azure_openai_deployment = settings.AZURE_OPENAI_DEPLOYMENT_NAME or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "")
-    
     azure_ai_key = settings.AZURE_AI_FOUNDRY_API_KEY or os.getenv("AZURE_AI_FOUNDRY_API_KEY", "")
     azure_ai_endpoint = settings.AZURE_AI_FOUNDRY_ENDPOINT or os.getenv("AZURE_AI_FOUNDRY_ENDPOINT", "")
-    
     openai_key = settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY", "")
     gemini_key = settings.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "")
-    
-    if not provider:
-        if azure_openai_key and azure_openai_endpoint and azure_openai_deployment:
-            provider = "azure_openai"
-        elif azure_ai_key and azure_ai_endpoint:
-            provider = "azure_ai_foundry"
-        elif openai_key and not openai_key.startswith("your_") and not openai_key.startswith("AIza"):
-            provider = "openai"
-        elif gemini_key and not gemini_key.startswith("your_"):
-            provider = "gemini"
-        else:
-            if openai_key and openai_key.startswith("AIza"):
-                provider = "gemini"
-                gemini_key = openai_key
-            else:
-                raise HTTPException(
-                    status_code=500,
-                    detail="No AI Provider keys are configured. Please set GEMINI_API_KEY, AZURE_OPENAI_API_KEY, AZURE_AI_FOUNDRY_API_KEY, or OPENAI_API_KEY."
-                )
+
+    provider, gemini_key = _resolve_provider(
+        raw_provider, azure_openai_key, azure_openai_endpoint, azure_openai_deployment,
+        azure_ai_key, azure_ai_endpoint, openai_key, gemini_key
+    )
 
     if provider == "gemini":
-        api_key = gemini_key or os.getenv("GEMINI_API_KEY", "")
-        if not api_key or api_key.startswith("your_"):
-            raise HTTPException(status_code=500, detail="Gemini API Key is not configured.")
-        
-        genai.configure(api_key=api_key)
-        try:
-            model = genai.GenerativeModel(
-                model_name="gemini-flash-latest",
-                system_instruction=system_instruction
-            )
-            generation_config = genai.GenerationConfig(
-                response_mime_type="application/json"
-            )
-            if schema_class:
-                generation_config.response_schema = schema_class
-                
-            response = model.generate_content(
-                prompt,
-                generation_config=generation_config
-            )
-            if not response.text:
-                raise Exception("Gemini returned empty response.")
-            return response.text
-        except Exception as e:
-            raise Exception(f"Gemini API invocation failed: {str(e)}")
+        return _call_gemini(system_instruction, prompt, schema_class, gemini_key)
+    if provider == "azure_openai":
+        return _call_azure_openai(system_instruction, prompt, azure_openai_key, azure_openai_endpoint, azure_openai_deployment)
+    if provider == "azure_ai_foundry":
+        return _call_azure_ai_foundry(system_instruction, prompt, azure_ai_key, azure_ai_endpoint)
+    if provider == "openai":
+        return _call_openai(system_instruction, prompt, openai_key)
+    raise HTTPException(status_code=500, detail=f"Unsupported AI provider: {provider}")
 
-    elif provider == "azure_openai":
-        endpoint = azure_openai_endpoint
-        deployment = azure_openai_deployment
-        api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
-        
-        url = f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
-        headers = {
-            "api-key": azure_openai_key,
-            "Content-Type": "application/json"
-        }
-        format_instr = "\nYour output MUST be a raw JSON object conforming strictly to the requested schema. Do not output markdown code fences or conversational text."
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_instruction + format_instr},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.0,
-            "response_format": {"type": "json_object"}
-        }
-        return call_openai_compatible_api(url, headers, payload)
-
-    elif provider == "azure_ai_foundry":
-        endpoint = azure_ai_endpoint
-        model_name = os.getenv("AZURE_AI_FOUNDRY_MODEL", "")
-        
-        url = endpoint
-        if "/chat/completions" not in url:
-            base_url = url.split("?")[0].rstrip("/")
-            query_params = url.split("?")[1] if "?" in url else ""
-            
-            if "/models" not in base_url and "/v1" not in base_url:
-                base_url = f"{base_url}/models/chat/completions"
-            elif "/models" in base_url and "/chat/completions" not in base_url:
-                base_url = f"{base_url}/chat/completions"
-            elif "/v1" in base_url and "/chat/completions" not in base_url:
-                base_url = f"{base_url}/chat/completions"
-                
-            url = f"{base_url}?{query_params}" if query_params else base_url
-            
-        if "api-version=" not in url:
-            api_version = os.getenv("AZURE_AI_FOUNDRY_API_VERSION", "2024-05-01-preview")
-            separator = "&" if "?" in url else "?"
-            url = f"{url}{separator}api-version={api_version}"
-            
-        headers = {
-            "Authorization": f"Bearer {azure_ai_key}",
-            "Content-Type": "application/json"
-        }
-        format_instr = "\nYour output MUST be a raw JSON object conforming strictly to the requested schema. Do not output markdown code fences or conversational text."
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_instruction + format_instr},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.0
-        }
-        if model_name:
-            payload["model"] = model_name
-            
-        return call_openai_compatible_api(url, headers, payload)
-
-    elif provider == "openai":
-        api_base = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
-        model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        
-        url = f"{api_base.rstrip('/')}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {openai_key}",
-            "Content-Type": "application/json"
-        }
-        format_instr = "\nYour output MUST be a raw JSON object conforming strictly to the requested schema."
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_instruction + format_instr},
-                {"role": "user", "content": prompt}
-            ],
-            "model": model_name,
-            "temperature": 0.0,
-            "response_format": {"type": "json_object"}
-        }
-        return call_openai_compatible_api(url, headers, payload)
-
-    else:
-        raise HTTPException(status_code=500, detail=f"Unsupported AI provider: {provider}")
 
 def analyze_email_content(email_content: str) -> EmailAnalysis:
     """
