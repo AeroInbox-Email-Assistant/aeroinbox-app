@@ -231,7 +231,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Run the SonarCloud analysis and enforce the Quality Gate check
+      # Run the SonarCloud analysis and wait for Quality Gate results
       - name: SonarCloud Scan
         uses: sonarsource/sonarcloud-github-action@v2
         env:
