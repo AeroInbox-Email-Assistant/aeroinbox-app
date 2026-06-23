@@ -243,6 +243,13 @@ jobs:
             -Dsonar.sources=services,frontend/src
             -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/build/**,**/tests/**,**/venv/**
 
+      - name: SonarCloud Quality Gate check
+        uses: sonarsource/sonarcloud-github-gate-action@v3
+        with:
+          timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
       - name: Setup Python for Snyk
         if: needs.detect-changes.outputs.has-python-changes == 'true'
         uses: actions/setup-python@v5
@@ -275,42 +282,36 @@ jobs:
 
       - name: Snyk Scan - api-service
         if: needs.detect-changes.outputs.api-service-changed == 'true'
-        continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk test --file=services/api-service/requirements.txt --severity-threshold=high
 
       - name: Snyk Scan - gmail-service
         if: needs.detect-changes.outputs.gmail-service-changed == 'true'
-        continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk test --file=services/gmail-service/requirements.txt --severity-threshold=high
 
       - name: Snyk Scan - ai-service
         if: needs.detect-changes.outputs.ai-service-changed == 'true'
-        continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk test --file=services/ai-service/requirements.txt --severity-threshold=high
 
       - name: Snyk Scan - rule-engine
         if: needs.detect-changes.outputs.rule-engine-changed == 'true'
-        continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk test --file=services/rule-engine/requirements.txt --severity-threshold=high
 
       - name: Snyk Scan - meeting-service
         if: needs.detect-changes.outputs.meeting-service-changed == 'true'
-        continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk test --file=services/meeting-service/requirements.txt --severity-threshold=high
 
       - name: Snyk Scan - frontend
         if: needs.detect-changes.outputs.frontend-changed == 'true'
-        continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk test --file=frontend/package.json --severity-threshold=high
@@ -350,12 +351,11 @@ jobs:
 
       - name: Run Trivy Vulnerability Scanner
         uses: aquasecurity/trivy-action@v0.20.0
-        continue-on-error: true
         with:
           image-ref: '${{ secrets.ACR_LOGIN_SERVER }}/aeroinbox/${{ matrix.service }}:${{ github.sha }}'
           format: 'table'
           output: 'trivy-report-${{ matrix.service }}.txt'
-          exit-code: '0'
+          exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'HIGH,CRITICAL'
