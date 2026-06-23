@@ -1,4 +1,5 @@
 import base64
+from typing import Optional
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
