@@ -120,6 +120,17 @@ def _extract_email_and_name(val: str, key_raw: str) -> tuple[Optional[str], Opti
     name = cn_match.group(1).replace('"', '') if cn_match else None
     return email, name
 
+def _handle_ics_organizer(val: str, key_raw: str, data: dict):
+    email, name = _extract_email_and_name(val, key_raw)
+    data["organizer"] = email or val
+    if name:
+        data["organizer_name"] = name
+
+def _handle_ics_attendee(val: str, key_raw: str, participants: list):
+    email, name = _extract_email_and_name(val, key_raw)
+    if email:
+        participants.append({"email": email, "name": name})
+
 def _parse_ics_properties(unfolded_lines: list[str]) -> tuple[dict, list]:
     data = {}
     participants = []
@@ -130,31 +141,22 @@ def _parse_ics_properties(unfolded_lines: list[str]) -> tuple[dict, list]:
         val = val.strip()
         key = key_raw.split(";")[0].upper()
         
-        if key == "SUMMARY":
-            data["title"] = val
-        elif key == "DESCRIPTION":
-            data["description"] = val
-        elif key == "DTSTART":
-            data["dtstart"] = val
-        elif key == "DTEND":
-            data["dtend"] = val
-        elif key == "LOCATION":
-            data["location"] = val
+        if key in ("SUMMARY", "DESCRIPTION", "DTSTART", "DTEND", "LOCATION", "UID"):
+            field_map = {
+                "SUMMARY": "title",
+                "DESCRIPTION": "description",
+                "DTSTART": "dtstart",
+                "DTEND": "dtend",
+                "LOCATION": "location",
+                "UID": "uid"
+            }
+            data[field_map[key]] = val
         elif key == "ORGANIZER":
-            email, name = _extract_email_and_name(val, key_raw)
-            data["organizer"] = email or val
-            if name:
-                data["organizer_name"] = name
+            _handle_ics_organizer(val, key_raw, data)
         elif key == "ATTENDEE":
-            email, name = _extract_email_and_name(val, key_raw)
-            if email:
-                participants.append({"email": email, "name": name})
-        elif key == "UID":
-            data["uid"] = val
-        elif key == "STATUS":
-            data["status"] = val.upper()
-        elif key == "METHOD":
-            data["method"] = val.upper()
+            _handle_ics_attendee(val, key_raw, participants)
+        elif key in ("STATUS", "METHOD"):
+            data[key.lower()] = val.upper()
     return data, participants
 
 def parse_ics_content(ics_text: str):
@@ -216,7 +218,7 @@ def extract_meeting_url(text: str) -> tuple[Optional[str], Optional[str]]:
         
     return None, None
 
-async def _process_ics_email(user_id: str, source_email_id: str, subject: str, sender: str, body: str, ics_data: tuple):
+async def _process_ics_email(user_id: str, source_email_id: str, subject: str, sender: str, ics_data: tuple):
     data, parts = ics_data
     
     start_dt = convert_ics_datetime(data.get("dtstart", ""))
@@ -257,6 +259,59 @@ async def _process_ics_email(user_id: str, source_email_id: str, subject: str, s
         participants=participants
     )
 
+async def _save_ai_detected_meeting(
+    user_id: str,
+    source_email_id: str,
+    subject: str,
+    sender: str,
+    body: str,
+    meet_url: Optional[str],
+    platform: Optional[str],
+    ai_res: dict
+):
+    ai_title = ai_res.get("meeting_title", subject or "Meeting")
+    ai_platform = ai_res.get("meeting_platform", "Other")
+    ai_url = ai_res.get("meeting_url", "")
+    ai_organizer = ai_res.get("organizer", sender)
+    ai_start_date = ai_res.get("start_date")
+    ai_start_time = ai_res.get("start_time")
+    ai_end_date = ai_res.get("end_date") or ai_start_date
+    ai_end_time = ai_res.get("end_time")
+    
+    start_dt = f"{ai_start_date}T{ai_start_time}:00"
+    end_dt = f"{ai_end_date}T{ai_end_time}:00"
+    
+    action_type = ai_res.get("action_type", "create")
+    status = "Pending"
+    
+    final_url = meet_url or ai_url
+    final_platform = platform or ai_platform
+    if final_url:
+        status = "Confirmed"
+        
+    if action_type == "cancel" or "cancel" in ai_title.lower():
+        status = "Cancelled"
+    elif action_type == "update":
+        status = "Updated"
+        
+    ai_parts = ai_res.get("participants", [])
+    participants = [Participant(participant_email=p["email"], participant_name=p.get("name")) for p in ai_parts if p.get("email")]
+    
+    await save_or_update_meeting(
+        user_id=user_id,
+        source_email_id=source_email_id,
+        source_platform="gmail",
+        meeting_platform=final_platform,
+        meeting_url=final_url,
+        meeting_title=ai_title,
+        description=body[:500],
+        organizer=ai_organizer,
+        start_datetime=start_dt,
+        end_datetime=end_dt,
+        status=status,
+        participants=participants
+    )
+
 async def _process_text_email(client: httpx.AsyncClient, user_id: str, source_email_id: str, subject: str, sender: str, body: str):
     meet_url, platform = extract_meeting_url(body)
     if not meet_url:
@@ -288,47 +343,15 @@ async def _process_text_email(client: httpx.AsyncClient, user_id: str, source_em
     is_meeting = False
     if ai_res and ai_res.get("is_meeting"):
         is_meeting = True
-        ai_title = ai_res.get("meeting_title", subject or "Meeting")
-        ai_platform = ai_res.get("meeting_platform", "Other")
-        ai_url = ai_res.get("meeting_url", "")
-        ai_organizer = ai_res.get("organizer", sender)
-        ai_start_date = ai_res.get("start_date")
-        ai_start_time = ai_res.get("start_time")
-        ai_end_date = ai_res.get("end_date") or ai_start_date
-        ai_end_time = ai_res.get("end_time")
-        
-        start_dt = f"{ai_start_date}T{ai_start_time}:00"
-        end_dt = f"{ai_end_date}T{ai_end_time}:00"
-        
-        action_type = ai_res.get("action_type", "create")
-        status = "Pending"
-        
-        final_url = meet_url or ai_url
-        final_platform = platform or ai_platform
-        if final_url:
-            status = "Confirmed"
-            
-        if action_type == "cancel" or "cancel" in ai_title.lower():
-            status = "Cancelled"
-        elif action_type == "update":
-            status = "Updated"
-            
-        ai_parts = ai_res.get("participants", [])
-        participants = [Participant(participant_email=p["email"], participant_name=p.get("name")) for p in ai_parts if p.get("email")]
-        
-        await save_or_update_meeting(
+        await _save_ai_detected_meeting(
             user_id=user_id,
             source_email_id=source_email_id,
-            source_platform="gmail",
-            meeting_platform=final_platform,
-            meeting_url=final_url,
-            meeting_title=ai_title,
-            description=body[:500],
-            organizer=ai_organizer,
-            start_datetime=start_dt,
-            end_datetime=end_dt,
-            status=status,
-            participants=participants
+            subject=subject,
+            sender=sender,
+            body=body,
+            meet_url=meet_url,
+            platform=platform,
+            ai_res=ai_res
         )
     
     if not is_meeting and meet_url:
@@ -366,7 +389,7 @@ async def _process_single_email(client: httpx.AsyncClient, email: dict):
     # Check for ICS
     ics_data = parse_ics_content(body)
     if ics_data:
-        await _process_ics_email(user_id, source_email_id, subject, sender, body, ics_data)
+        await _process_ics_email(user_id, source_email_id, subject, sender, ics_data)
         return
         
     await _process_text_email(client, user_id, source_email_id, subject, sender, body)
