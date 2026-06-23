@@ -6,6 +6,133 @@ import Header from "../components/Header";
 import EmailCard from "../components/EmailCard";
 import AIInsights from "../components/AIInsights";
 
+const validateId = (id) => {
+  if (typeof id !== "number" && typeof id !== "string") {
+    throw new Error("Invalid ID type");
+  }
+  const clean = String(id).trim();
+  if (!/^[a-zA-Z0-9_-]+$/.test(clean)) {
+    throw new Error("Security check failed: invalid characters in ID");
+  }
+  return encodeURIComponent(clean);
+};
+
+function MeetingCard({ meet, onAcceptUpdate, onRemoveMeeting }) {
+  const formattedTime = new Date(meet.start_datetime).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const formattedDate = new Date(meet.start_datetime).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+  });
+  const platformColors = {
+    "Google Meet":
+      "bg-indigo-500/10 text-indigo-600 dark:text-indigo-450 border-indigo-500/20",
+    Zoom: "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/20",
+    "Microsoft Teams":
+      "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20",
+  };
+  const badgeClass =
+    platformColors[meet.meeting_platform] ||
+    "bg-slate-500/10 text-slate-650 dark:text-slate-400 border-slate-500/20";
+
+  return (
+    <div
+      className="p-3.5 bg-white dark:bg-[#111827]/65 rounded-xl border border-slate-200 dark:border-slate-800/80 shadow-sm space-y-3 hover:shadow-md transition-all duration-200 group text-left"
+    >
+      <div className="flex justify-between items-start">
+        <span
+          className={`px-2 py-0.5 rounded border text-[9px] font-bold ${badgeClass}`}
+        >
+          {meet.meeting_platform}
+        </span>
+        {meet.status === "Cancelled" && (
+          <span className="px-2 py-0.5 rounded border border-red-500/30 bg-red-500/10 text-[9px] font-bold text-red-500 animate-pulse">
+            Cancelled
+          </span>
+        )}
+        {meet.status === "Updated" && (
+          <span className="px-2 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-[9px] font-bold text-amber-500 animate-pulse">
+            Rescheduled
+          </span>
+        )}
+      </div>
+
+      <div>
+        <h4 className="font-bold text-xs text-slate-850 dark:text-slate-100 line-clamp-2 leading-snug group-hover:text-indigo-500 dark:group-hover:text-indigo-400 transition-colors">
+          {meet.meeting_title}
+        </h4>
+        <div className="flex items-center space-x-1.5 mt-1.5 text-[10px] text-slate-500 dark:text-slate-400 font-medium">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={1.5}
+            stroke="currentColor"
+            className="w-3.5 h-3.5"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
+            />
+          </svg>
+          <span>
+            {formattedDate} at {formattedTime}
+          </span>
+        </div>
+        {meet.organizer && (
+          <div className="text-[9px] text-slate-400 dark:text-slate-500 truncate mt-1">
+            Organized by:{" "}
+            <span className="font-semibold">
+              {meet.organizer}
+            </span>
+          </div>
+        )}
+        {meet.participants &&
+          meet.participants.length > 0 && (
+            <div className="text-[9px] text-slate-400 dark:text-slate-500 mt-0.5">
+              Attendees:{" "}
+              <span className="font-semibold">
+                {meet.participants.length} invited
+              </span>
+            </div>
+          )}
+      </div>
+
+      <div className="pt-2 border-t border-slate-100 dark:border-slate-800/40 flex space-x-1.5">
+        {meet.meeting_url &&
+          meet.status !== "Cancelled" && (
+            <a
+              href={meet.meeting_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 py-1.5 rounded bg-indigo-600 hover:bg-indigo-505 text-[10px] font-bold text-white text-center transition-colors cursor-pointer"
+            >
+              Join Meeting
+            </a>
+          )}
+        {meet.status === "Updated" && (
+          <button
+            onClick={() => onAcceptUpdate(meet.id)}
+            className="px-2 py-1.5 rounded bg-amber-500 hover:bg-amber-600 text-[10px] font-bold text-white transition-colors cursor-pointer"
+          >
+            Accept Update
+          </button>
+        )}
+        <button
+          onClick={() => onRemoveMeeting(meet.id)}
+          className="px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-800 hover:bg-red-500/5 hover:text-red-500 hover:border-red-500/20 text-[10px] font-bold text-slate-500 dark:text-slate-400 transition-all cursor-pointer"
+          title="Remove from Calendar"
+        >
+          Remove
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [emails, setEmails] = useState([]);
@@ -110,7 +237,7 @@ export default function Dashboard() {
   }, [activeEmailFilter]);
 
   const handleAcknowledgeReminder = async (meetingId) => {
-    const sanitizedId = encodeURIComponent(String(meetingId));
+    const sanitizedId = validateId(meetingId);
     try {
       await API.post(`/meetings/reminders/${sanitizedId}/acknowledge`);
       setActiveReminder(null);
@@ -327,7 +454,7 @@ export default function Dashboard() {
   };
 
   const handleConfirmMeeting = async (meetingId) => {
-    const sanitizedId = encodeURIComponent(String(meetingId));
+    const sanitizedId = validateId(meetingId);
     try {
       await API.post(`/meetings/${sanitizedId}/confirm`);
       await fetchMeetings();
@@ -337,7 +464,7 @@ export default function Dashboard() {
   };
 
   const handleDismissMeeting = async (meetingId) => {
-    const sanitizedId = encodeURIComponent(String(meetingId));
+    const sanitizedId = validateId(meetingId);
     try {
       await API.post(`/meetings/${sanitizedId}/dismiss`);
       await fetchMeetings();
@@ -347,7 +474,7 @@ export default function Dashboard() {
   };
 
   const handleAcceptUpdate = async (meetingId) => {
-    const sanitizedId = encodeURIComponent(String(meetingId));
+    const sanitizedId = validateId(meetingId);
     try {
       await API.post(`/meetings/${sanitizedId}/accept-update`);
       await fetchMeetings();
@@ -357,7 +484,7 @@ export default function Dashboard() {
   };
 
   const handleRemoveMeeting = async (meetingId) => {
-    const sanitizedId = encodeURIComponent(String(meetingId));
+    const sanitizedId = validateId(meetingId);
     try {
       await API.post(`/meetings/${sanitizedId}/remove`);
       await fetchMeetings();
@@ -510,7 +637,7 @@ export default function Dashboard() {
       : localStorage.getItem("google_access_token");
 
     try {
-      const sanitizedEmailId = encodeURIComponent(String(email.id));
+      const sanitizedEmailId = validateId(email.id);
       const endpoint = read
         ? `/emails/${sanitizedEmailId}/read`
         : `/emails/${sanitizedEmailId}/unread`;
@@ -549,7 +676,7 @@ export default function Dashboard() {
       : localStorage.getItem("google_access_token");
 
     try {
-      const sanitizedEmailId = encodeURIComponent(String(email.id));
+      const sanitizedEmailId = validateId(email.id);
       await API.post(
         `/emails/${sanitizedEmailId}/move-to-inbox`,
         {},
@@ -571,11 +698,14 @@ export default function Dashboard() {
 
     // Strip name bracket to get raw sender email
     const fromStr = email.sender || "";
-    const match = fromStr.match(/<([^>]*)>/);
-    const senderEmailAddress = match ? match[1] : fromStr;
+    const startIdx = fromStr.indexOf("<");
+    const endIdx = fromStr.lastIndexOf(">");
+    const senderEmailAddress = (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx)
+      ? fromStr.substring(startIdx + 1, endIdx).trim()
+      : fromStr.trim();
 
     try {
-      const sanitizedEmailId = encodeURIComponent(String(email.id));
+      const sanitizedEmailId = validateId(email.id);
       await API.post(
         `/emails/${sanitizedEmailId}/mark-safe`,
         {
@@ -711,7 +841,7 @@ export default function Dashboard() {
   };
 
   const handleUpdateTaskStatus = async (taskId, newStatus) => {
-    const sanitizedId = encodeURIComponent(String(taskId));
+    const sanitizedId = validateId(taskId);
     try {
       const response = await API.put(`/tasks/${sanitizedId}`, { status: newStatus });
       setTasks((prev) =>
@@ -723,7 +853,7 @@ export default function Dashboard() {
   };
 
   const handleDeleteTask = async (taskId) => {
-    const sanitizedId = encodeURIComponent(String(taskId));
+    const sanitizedId = validateId(taskId);
     try {
       await API.delete(`/tasks/${sanitizedId}`);
       setTasks((prev) => prev.filter((t) => t.id !== taskId));
@@ -1136,138 +1266,93 @@ export default function Dashboard() {
                         <path
                           strokeLinecap="round"
                           strokeLinejoin="round"
-                          d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5m-9-6h.008v.008H12v-.008ZM12 15h.008v.008H12V15Zm0 2.25h.008v.008H12v-.008ZM9.75 15h.008v.008H9.75V15Zm0 2.25h.008v.008H9.75v-.008ZM7.5 15h.008v.008H7.5V15Zm0 2.25h.008v.008H7.5v-.008Zm6.75-4.5h.008v.008h-.008v-.008Zm0 2.25h.008v.008h-.008V15Zm0 2.25h.008v.008h-.008v-.008Zm2.25-4.5h.008v.008H16.5v-.008Zm0 2.25h.008v.008H16.5V15Z"
+                          d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5m-9-6h.008v.008H12v-.008ZM12 15h.008v.008H12v-.008Zm0 2.25h.008v.008H12v-.008ZM9.75 15h.008v.008H9.75V15Zm0 2.25h.008v.008H9.75v-.008ZM7.5 15h.008v.008H7.5V15Zm0 2.25h.008v.008H7.5v-.008Zm6.75-4.5h.008v.008h-.008v-.008Zm0 2.25h.008v.008h-.008V15Zm0 2.25h.008v.008h-.008v-.008Zm2.25-4.5h.008v.008H16.5v-.008Zm0 2.25h.008v.008H16.5V15Z"
                         />
                       </svg>
                       <span className="text-[10px]">No meetings</span>
                     </div>
                   ) : (
-                    colMeetings.map((meet) => {
-                      const formattedTime = new Date(
-                        meet.start_datetime,
-                      ).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      });
-                      const formattedDate = new Date(
-                        meet.start_datetime,
-                      ).toLocaleDateString([], {
-                        month: "short",
-                        day: "numeric",
-                      });
-                      const platformColors = {
-                        "Google Meet":
-                          "bg-indigo-500/10 text-indigo-600 dark:text-indigo-450 border-indigo-500/20",
-                        Zoom: "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/20",
-                        "Microsoft Teams":
-                          "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20",
-                      };
-                      const badgeClass =
-                        platformColors[meet.meeting_platform] ||
-                        "bg-slate-500/10 text-slate-650 dark:text-slate-400 border-slate-500/20";
-
-                      return (
-                        <div
-                          key={meet.id}
-                          className="p-3.5 bg-white dark:bg-[#111827]/65 rounded-xl border border-slate-200 dark:border-slate-800/80 shadow-sm space-y-3 hover:shadow-md transition-all duration-200 group text-left"
-                        >
-                          <div className="flex justify-between items-start">
-                            <span
-                              className={`px-2 py-0.5 rounded border text-[9px] font-bold ${badgeClass}`}
-                            >
-                              {meet.meeting_platform}
-                            </span>
-                            {meet.status === "Cancelled" && (
-                              <span className="px-2 py-0.5 rounded border border-red-500/30 bg-red-500/10 text-[9px] font-bold text-red-500 animate-pulse">
-                                Cancelled
-                              </span>
-                            )}
-                            {meet.status === "Updated" && (
-                              <span className="px-2 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-[9px] font-bold text-amber-500 animate-pulse">
-                                Rescheduled
-                              </span>
-                            )}
-                          </div>
-
-                          <div>
-                            <h4 className="font-bold text-xs text-slate-850 dark:text-slate-100 line-clamp-2 leading-snug group-hover:text-indigo-500 dark:group-hover:text-indigo-400 transition-colors">
-                              {meet.meeting_title}
-                            </h4>
-                            <div className="flex items-center space-x-1.5 mt-1.5 text-[10px] text-slate-500 dark:text-slate-400 font-medium">
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                strokeWidth={1.5}
-                                stroke="currentColor"
-                                className="w-3.5 h-3.5"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
-                                />
-                              </svg>
-                              <span>
-                                {formattedDate} at {formattedTime}
-                              </span>
-                            </div>
-                            {meet.organizer && (
-                              <div className="text-[9px] text-slate-400 dark:text-slate-500 truncate mt-1">
-                                Organized by:{" "}
-                                <span className="font-semibold">
-                                  {meet.organizer}
-                                </span>
-                              </div>
-                            )}
-                            {meet.participants &&
-                              meet.participants.length > 0 && (
-                                <div className="text-[9px] text-slate-400 dark:text-slate-500 mt-0.5">
-                                  Attendees:{" "}
-                                  <span className="font-semibold">
-                                    {meet.participants.length} invited
-                                  </span>
-                                </div>
-                              )}
-                          </div>
-
-                          <div className="pt-2 border-t border-slate-100 dark:border-slate-800/40 flex space-x-1.5">
-                            {meet.meeting_url &&
-                              meet.status !== "Cancelled" && (
-                                <a
-                                  href={meet.meeting_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="flex-1 py-1.5 rounded bg-indigo-600 hover:bg-indigo-505 text-[10px] font-bold text-white text-center transition-colors cursor-pointer"
-                                >
-                                  Join Meeting
-                                </a>
-                              )}
-                            {meet.status === "Updated" && (
-                              <button
-                                onClick={() => handleAcceptUpdate(meet.id)}
-                                className="px-2 py-1.5 rounded bg-amber-500 hover:bg-amber-600 text-[10px] font-bold text-white transition-colors cursor-pointer"
-                              >
-                                Accept Update
-                              </button>
-                            )}
-                            <button
-                              onClick={() => handleRemoveMeeting(meet.id)}
-                              className="px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-800 hover:bg-red-500/5 hover:text-red-500 hover:border-red-500/20 text-[10px] font-bold text-slate-500 dark:text-slate-400 transition-all cursor-pointer"
-                              title="Remove from Calendar"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })
+                    colMeetings.map((meet) => (
+                      <MeetingCard
+                        key={meet.id}
+                        meet={meet}
+                        onAcceptUpdate={handleAcceptUpdate}
+                        onRemoveMeeting={handleRemoveMeeting}
+                      />
+                    ))
                   )}
                 </div>
               </div>
             );
           })}
         </div>
+      </div>
+    );
+  };
+
+  const renderEmailListContent = () => {
+    if (isLoading || isSearching) {
+      return (
+        <div className="flex-1 flex flex-col items-center justify-center space-y-3">
+          <div className="h-7 w-7 rounded-full border-2 border-indigo-500/20 border-t-indigo-500 animate-spin"></div>
+          <span className="text-xs text-slate-500 font-medium">
+            {isSearching ? "Searching mailbox..." : "Downloading mailboxes..."}
+          </span>
+        </div>
+      );
+    }
+    if (error) {
+      return (
+        <div className="p-6 text-center space-y-3">
+          <p className="text-xs text-red-500 dark:text-red-400 font-semibold">
+            {error}
+          </p>
+          <button
+            onClick={fetchEmails}
+            className="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white transition-all cursor-pointer"
+          >
+            Retry Connection
+          </button>
+        </div>
+      );
+    }
+    if (filteredEmailsList.length === 0) {
+      return (
+        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-2">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={1.5}
+            stroke="currentColor"
+            className="w-8 h-8 text-slate-400 dark:text-slate-600"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M9 12.75 11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 0 1-1.043 3.296 3.745 3.745 0 0 1-3.296 1.043A3.745 3.745 0 0 1 12 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 0 1-3.296-1.043 3.745 3.745 0 0 1-1.043-3.296A3.745 3.745 0 0 1 3 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 0 1 1.043-3.296 3.746 3.746 0 0 1 3.296-1.043A3.746 3.746 0 0 1 12 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 0 1 3.296 1.043 3.746 3.746 0 0 1 1.043 3.296A3.745 3.745 0 0 1 21 12Z"
+            />
+          </svg>
+          <p className="text-xs font-bold text-slate-600 dark:text-slate-400">
+            All caught up!
+          </p>
+          <p className="text-[10px] text-slate-400 dark:text-slate-600">
+            No emails match the selected filters.
+          </p>
+        </div>
+      );
+    }
+    return (
+      <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/20">
+        {filteredEmailsList.map((email) => (
+          <EmailCard
+            key={email.id}
+            email={email}
+            isSelected={selectedEmail?.id === email.id}
+            onClick={() => setSelectedEmail(email)}
+            aiInsights={aiInsightsCache[email.id] || email.ai_analysis}
+          />
+        ))}
       </div>
     );
   };
@@ -1371,63 +1456,7 @@ export default function Dashboard() {
                 </div>
 
                 {/* List View Container */}
-                {isLoading || isSearching ? (
-                  <div className="flex-1 flex flex-col items-center justify-center space-y-3">
-                    <div className="h-7 w-7 rounded-full border-2 border-indigo-500/20 border-t-indigo-500 animate-spin"></div>
-                    <span className="text-xs text-slate-500 font-medium">
-                      {isSearching ? "Searching mailbox..." : "Downloading mailboxes..."}
-                    </span>
-                  </div>
-                ) : error ? (
-                  <div className="p-6 text-center space-y-3">
-                    <p className="text-xs text-red-500 dark:text-red-400 font-semibold">
-                      {error}
-                    </p>
-                    <button
-                      onClick={fetchEmails}
-                      className="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white transition-all cursor-pointer"
-                    >
-                      Retry Connection
-                    </button>
-                  </div>
-                ) : filteredEmailsList.length === 0 ? (
-                  <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-2">
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      strokeWidth={1.5}
-                      stroke="currentColor"
-                      className="w-8 h-8 text-slate-400 dark:text-slate-600"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M9 12.75 11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 0 1-1.043 3.296 3.745 3.745 0 0 1-3.296 1.043A3.745 3.745 0 0 1 12 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 0 1-3.296-1.043 3.745 3.745 0 0 1-1.043-3.296A3.745 3.745 0 0 1 3 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 0 1 1.043-3.296 3.746 3.746 0 0 1 3.296-1.043A3.746 3.746 0 0 1 12 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 0 1 3.296 1.043 3.746 3.746 0 0 1 1.043 3.296A3.745 3.745 0 0 1 21 12Z"
-                      />
-                    </svg>
-                    <p className="text-xs font-bold text-slate-600 dark:text-slate-400">
-                      All caught up!
-                    </p>
-                    <p className="text-[10px] text-slate-400 dark:text-slate-600">
-                      No emails match the selected filters.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/20">
-                    {filteredEmailsList.map((email) => (
-                      <EmailCard
-                        key={email.id}
-                        email={email}
-                        isSelected={selectedEmail?.id === email.id}
-                        onClick={() => setSelectedEmail(email)}
-                        aiInsights={
-                          aiInsightsCache[email.id] || email.ai_analysis
-                        }
-                      />
-                    ))}
-                  </div>
-                )}
+                {renderEmailListContent()}
               </div>
 
               {/* RIGHT PANEL: Email Details & AI Insights Column */}
@@ -1512,11 +1541,13 @@ export default function Dashboard() {
                               <div className="flex items-center space-x-2">
                                 <span className="h-2 w-2 rounded-full bg-indigo-500 animate-ping"></span>
                                 <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">
-                                  {meetingForSelected.status === "Cancelled"
-                                    ? "Meeting Cancelled"
-                                    : meetingForSelected.status === "Updated"
-                                      ? "Meeting Rescheduled"
-                                      : "Meeting Detected"}
+                                  {(() => {
+                                    const statusLabels = {
+                                      Cancelled: "Meeting Cancelled",
+                                      Updated: "Meeting Rescheduled",
+                                    };
+                                    return statusLabels[meetingForSelected.status] || "Meeting Detected";
+                                  })()}
                                 </span>
                               </div>
                               <h3 className="text-xs font-bold text-slate-800 dark:text-white">

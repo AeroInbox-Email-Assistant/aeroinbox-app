@@ -2,7 +2,6 @@ import os
 import sqlite3
 import hashlib
 import json
-import re
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -158,18 +157,30 @@ def get_api_key() -> str:
 def extract_json_block(text: str) -> str:
     """
     Extracts the first valid JSON block from LLM output, ignoring conversational text and code fences.
+    Uses string operations instead of regex to avoid backtracking vulnerabilities.
     """
     text_clean = text.strip()
+    # Strip markdown code fences (```json ... ``` or ``` ... ```) using string search
     if "```" in text_clean:
-        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text_clean, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-            
+        fence_start = text_clean.find("```")
+        after_fence = text_clean[fence_start + 3:]
+        # Skip optional language tag on the same token
+        newline_pos = after_fence.find("\n")
+        if newline_pos != -1:
+            after_fence = after_fence[newline_pos + 1:]
+        fence_end = after_fence.rfind("```")
+        if fence_end != -1:
+            candidate = after_fence[:fence_end].strip()
+            first_brace = candidate.find("{")
+            last_brace = candidate.rfind("}")
+            if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+                return candidate[first_brace:last_brace + 1].strip()
+
     first_brace = text_clean.find("{")
     last_brace = text_clean.rfind("}")
     if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
         return text_clean[first_brace:last_brace + 1].strip()
-        
+
     return text_clean
 
 def lowercase_keys(data):

@@ -75,24 +75,132 @@ app.include_router(emails_router, prefix="/emails", tags=["Emails"])
 app.include_router(meetings_router, prefix="/meetings", tags=["Meetings"])
 app.include_router(tasks_router, prefix="/tasks", tags=["Tasks"])
 
+def _compute_ai_score(ai_analysis: dict) -> int:
+    """
+    Computes an integer AI priority score from the AI analysis dict.
+    """
+    ai_priority = ai_analysis.get("priority", "Low")
+    score = 0
+    if ai_priority in ("High", "Critical"):
+        score = 30
+    elif ai_priority == "Medium":
+        score = 15
+    if ai_analysis.get("is_meeting_request"):
+        score += 10
+    if ai_analysis.get("has_deadline"):
+        score += 10
+    return score
+
+
+def _resolve_priority_label(final_score: int) -> str:
+    """
+    Maps a numeric priority score to a human-readable label.
+    """
+    if final_score >= 70:
+        return "Critical"
+    if final_score >= 45:
+        return "High"
+    if final_score >= 20:
+        return "Medium"
+    return "Low"
+
+
+async def _update_email_cache(email_id: str, user_id: str, ai_analysis: dict, ai_score: int):
+    """
+    Persists AI analysis results and auto-generated tasks to the PostgreSQL cache.
+    """
+    import json
+    from database import db as pg_db
+
+    existing = await pg_db.fetchrow(
+        "SELECT rule_score, user_id FROM prioritized_emails WHERE email_id = $1",
+        email_id
+    )
+    rule_score = existing["rule_score"] if existing else 0
+    resolved_user = user_id or (existing["user_id"] if existing else "unknown")
+
+    final_score = ai_score + rule_score
+    final_priority = _resolve_priority_label(final_score)
+
+    query = """
+        INSERT INTO prioritized_emails (
+            email_id, user_id, rule_score, ai_summary, ai_priority, ai_reply,
+            is_spam_false_positive, spam_analysis_reason, is_meeting_request, has_deadline, deadline_date,
+            final_priority, final_score, action_items
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        ON CONFLICT (email_id) DO UPDATE SET
+            ai_summary = EXCLUDED.ai_summary,
+            ai_priority = EXCLUDED.ai_priority,
+            ai_reply = EXCLUDED.ai_reply,
+            is_spam_false_positive = EXCLUDED.is_spam_false_positive,
+            spam_analysis_reason = EXCLUDED.spam_analysis_reason,
+            is_meeting_request = EXCLUDED.is_meeting_request,
+            has_deadline = EXCLUDED.has_deadline,
+            deadline_date = EXCLUDED.deadline_date,
+            final_priority = EXCLUDED.final_priority,
+            final_score = EXCLUDED.final_score,
+            action_items = EXCLUDED.action_items;
+    """
+    await pg_db.execute(
+        query,
+        email_id,
+        resolved_user,
+        rule_score,
+        ai_analysis.get("summary"),
+        ai_analysis.get("priority"),
+        ai_analysis.get("reply"),
+        ai_analysis.get("is_spam_false_positive", False),
+        ai_analysis.get("spam_analysis_reason"),
+        ai_analysis.get("is_meeting_request", False),
+        ai_analysis.get("has_deadline", False),
+        ai_analysis.get("deadline_date"),
+        final_priority,
+        final_score,
+        json.dumps(ai_analysis.get("action_items", []))
+    )
+    logger.info("Updated cache for email %s on-demand", email_id)
+
+    action_items = ai_analysis.get("action_items", [])
+    if action_items and resolved_user != "unknown":
+        for item in action_items:
+            if not item or not item.strip():
+                continue
+            exists = await pg_db.fetchval(
+                "SELECT 1 FROM user_tasks WHERE email_id = $1 AND task_source = $2 AND title = $3",
+                email_id, "email_action_item", item
+            )
+            if not exists:
+                await pg_db.execute(
+                    """
+                    INSERT INTO user_tasks (user_id, task_source, email_id, title, description, status)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    """,
+                    resolved_user, "email_action_item", email_id, item,
+                    "Extracted from email on-demand", "pending"
+                )
+                logger.info("Created on-demand AI task: %s", item)
+
+
 @app.post("/ai/process")
 async def process_email(payload: dict):
     """
     Gateway endpoint for processing a single email.
     Forwards the request payload to the internal AI microservice and updates DB cache on-demand.
     """
-    import json
     email_id = payload.get("email_id")
     email_content = payload.get("email_content")
     user_id = payload.get("user_id") or payload.get("account_email")
-    
-    # Forward only content to ai-service
+
+    ai_service_url = settings.AI_SERVICE_URL
+    if not ai_service_url or not ai_service_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=500, detail="AI_SERVICE_URL is not configured correctly.")
+
     ai_payload = {"email_content": email_content}
-    
+
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
-                f"{settings.AI_SERVICE_URL}/process",
+                f"{ai_service_url.rstrip('/')}/process",
                 json=ai_payload,
                 timeout=45.0
             )
@@ -106,110 +214,20 @@ async def process_email(payload: dict):
                     status_code=response.status_code,
                     detail=detail_msg
                 )
-            
+
             ai_analysis = response.json()
-            
+
             if email_id:
                 try:
-                    # Calculate Scores:
-                    # AI Score: Critical/High=30, Medium=15, Low=0. Boost meeting (+10), deadline (+10)
-                    ai_priority = ai_analysis.get("priority", "Low")
-                    ai_score = 0
-                    if ai_priority == "High" or ai_priority == "Critical":
-                        ai_score = 30
-                    elif ai_priority == "Medium":
-                        ai_score = 15
-                        
-                    if ai_analysis.get("is_meeting_request"):
-                        ai_score += 10
-                    if ai_analysis.get("has_deadline"):
-                        ai_score += 10
-                        
-                    # Fetch existing rule score if any
-                    from database import db as pg_db
-                    existing = await pg_db.fetchrow(
-                        "SELECT rule_score, user_id FROM prioritized_emails WHERE email_id = $1", 
-                        email_id
-                    )
-                    rule_score = existing["rule_score"] if existing else 0
-                    if not user_id:
-                        user_id = existing["user_id"] if existing else "unknown"
-                    
-                    final_score = ai_score + rule_score
-                    if final_score >= 70:
-                        final_priority = "Critical"
-                    elif final_score >= 45:
-                        final_priority = "High"
-                    elif final_score >= 20:
-                        final_priority = "Medium"
-                    else:
-                        final_priority = "Low"
-                        
-                    # Save / update cache
-                    query = """
-                        INSERT INTO prioritized_emails (
-                            email_id, user_id, rule_score, ai_summary, ai_priority, ai_reply,
-                            is_spam_false_positive, spam_analysis_reason, is_meeting_request, has_deadline, deadline_date,
-                            final_priority, final_score, action_items
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                        ON CONFLICT (email_id) DO UPDATE SET
-                            ai_summary = EXCLUDED.ai_summary,
-                            ai_priority = EXCLUDED.ai_priority,
-                            ai_reply = EXCLUDED.ai_reply,
-                            is_spam_false_positive = EXCLUDED.is_spam_false_positive,
-                            spam_analysis_reason = EXCLUDED.spam_analysis_reason,
-                            is_meeting_request = EXCLUDED.is_meeting_request,
-                            has_deadline = EXCLUDED.has_deadline,
-                            deadline_date = EXCLUDED.deadline_date,
-                            final_priority = EXCLUDED.final_priority,
-                            final_score = EXCLUDED.final_score,
-                            action_items = EXCLUDED.action_items;
-                    """
-                    await pg_db.execute(
-                        query,
-                        email_id,
-                        user_id,
-                        rule_score,
-                        ai_analysis.get("summary"),
-                        ai_analysis.get("priority"),
-                        ai_analysis.get("reply"),
-                        ai_analysis.get("is_spam_false_positive", False),
-                        ai_analysis.get("spam_analysis_reason"),
-                        ai_analysis.get("is_meeting_request", False),
-                        ai_analysis.get("has_deadline", False),
-                        ai_analysis.get("deadline_date"),
-                        final_priority,
-                        final_score,
-                        json.dumps(ai_analysis.get("action_items", []))
-                    )
-                    logger.info(f"Updated cache for email {email_id} on-demand")
-                    
-                    # Insert tasks
-                    action_items = ai_analysis.get("action_items", [])
-                    if action_items and user_id != "unknown":
-                        for item in action_items:
-                            if not item or not item.strip():
-                                continue
-                            exists = await pg_db.fetchval(
-                                "SELECT 1 FROM user_tasks WHERE email_id = $1 AND task_source = $2 AND title = $3",
-                                email_id, "email_action_item", item
-                            )
-                            if not exists:
-                                await pg_db.execute(
-                                    """
-                                    INSERT INTO user_tasks (user_id, task_source, email_id, title, description, status)
-                                    VALUES ($1, $2, $3, $4, $5, $6)
-                                    """,
-                                    user_id, "email_action_item", email_id, item,
-                                    "Extracted from email on-demand", "pending"
-                                )
-                                logger.info(f"Created on-demand AI task: {item}")
+                    ai_score = _compute_ai_score(ai_analysis)
+                    await _update_email_cache(email_id, user_id, ai_analysis, ai_score)
                 except Exception as db_ex:
-                    logger.error(f"Failed to update on-demand cache: {str(db_ex)}")
-            
+                    logger.error("Failed to update on-demand cache: %s", str(db_ex))
+
             return ai_analysis
         except httpx.HTTPError as e:
             raise HTTPException(status_code=502, detail=f"Failed to communicate with AI Service: {str(e)}")
+
 
 @app.get("/health")
 async def health(response: Response):

@@ -17,10 +17,9 @@ export default function OAuthCallback() {
       navigate(`/?error=${encodeURIComponent(error)}`);
       return;
     }
-
     if (code) {
       // Redirect to backend callback to exchange code for session token
-      window.location.href = `${AUTH_CALLBACK_URL}?code=${code}&state=${state || "new"}`;
+      globalThis.location.href = `${AUTH_CALLBACK_URL}?code=${code}&state=${state || "new"}`;
       return;
     }
 

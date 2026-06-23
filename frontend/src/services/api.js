@@ -65,8 +65,8 @@ API.interceptors.response.use(
           localStorage.removeItem("google_refresh_token");
           localStorage.removeItem("user_email");
           localStorage.removeItem("aeroinbox_accounts");
-          window.location.href = "/";
-          return Promise.reject(refreshError);
+          globalThis.location.href = "/";
+          throw refreshError;
         }
       } else {
         localStorage.removeItem("google_access_token");
@@ -74,11 +74,11 @@ API.interceptors.response.use(
         localStorage.removeItem("google_refresh_token");
         localStorage.removeItem("user_email");
         localStorage.removeItem("aeroinbox_accounts");
-        window.location.href = "/";
+        globalThis.location.href = "/";
       }
     }
 
-    return Promise.reject(error);
+    throw error;
   },
 );
 

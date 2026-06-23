@@ -28,8 +28,12 @@ export default function EmailCard({ email, isSelected, onClick, aiInsights }) {
   // Extract user-friendly sender name, stripping raw email addresses
   const getCleanSender = (fromStr) => {
     if (!fromStr) return "Unknown";
-    const match = fromStr.match(/^"?([^"<]*)"?\s*<[^>]*>$/);
-    return match ? match[1] : fromStr;
+    const angleIdx = fromStr.indexOf("<");
+    if (angleIdx !== -1) {
+      const namePart = fromStr.substring(0, angleIdx).trim();
+      return namePart.replace(/^"|"$/g, "").trim() || fromStr;
+    }
+    return fromStr;
   };
 
   // Human-readable relative or short date formatting

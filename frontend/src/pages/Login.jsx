@@ -14,7 +14,7 @@ export default function Login() {
   }, [searchParams]);
 
   const handleLogin = () => {
-    window.location.href = AUTH_LOGIN_URL;
+    globalThis.location.href = AUTH_LOGIN_URL;
   };
 
   return (
@@ -75,7 +75,7 @@ export default function Login() {
                 <path d="M12.24 10.285V13.4h6.887C18.2 15.614 15.645 18 12.24 18c-3.86 0-7-3.14-7-7s3.14-7 7-7c1.7 0 3.25.61 4.47 1.625l2.437-2.437C17.312 1.596 14.93 1 12.24 1c-5.523 0-10 4.477-10 10s4.477 10 10 10c5.783 0 9.62-4.053 9.62-9.79 0-.66-.06-1.29-.18-1.925H12.24Z" />
               </svg>
             </span>
-            Connect with Gmail
+            <span>Connect with Gmail</span>
           </button>
         </div>
 
