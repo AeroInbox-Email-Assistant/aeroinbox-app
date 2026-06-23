@@ -231,6 +231,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Debug Sonar Values
+        run: |
+          echo "ORG=${{ secrets.SONAR_ORGANIZATION }}"
+
       # Analyze code quality and security metrics, waiting for Quality Gate results
       - name: SonarCloud Scan
         uses: sonarsource/sonarcloud-github-action@v2
