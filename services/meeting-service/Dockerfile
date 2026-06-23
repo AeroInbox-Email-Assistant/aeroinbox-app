@@ -2,7 +2,7 @@
 FROM python:3.11-slim AS builder
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install --only-binary :all: -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install --only-binary :all: --require-hashes -r requirements.txt
 
 # Stage 2 - Runtime
 FROM python:3.11-slim AS runtime
