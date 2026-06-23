@@ -130,7 +130,7 @@ def ready(response: Response):
     req = urllib.request.Request(endpoint, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=5):
-            pass
+            logger.info("Azure OpenAI connection verified successfully.")
         return {
             "status": "ready",
             "service": "ai-service"

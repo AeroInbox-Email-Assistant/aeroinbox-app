@@ -28,7 +28,8 @@ class RedisManager:
             kwargs["ssl_cert_reqs"] = None
 
         self.client = aioredis.from_url(url, **kwargs)
-        logger.info("Redis connection pool initialized.")
+        await self.client.ping()
+        logger.info("Redis connection pool initialized and verified.")
 
     async def get_client(self) -> aioredis.Redis:
         if not self.client:
@@ -39,7 +40,7 @@ class RedisManager:
         if self.client:
             try:
                 await self.client.aclose()
-            except Exception as e:
+            except Exception:
                 logger.exception("Error closing Redis client")
             self.client = None
             logger.info("Redis connection pool closed.")

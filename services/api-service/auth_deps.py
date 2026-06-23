@@ -3,7 +3,7 @@ import logging
 from typing import List
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from redis_client import redis_manager
 
@@ -36,6 +36,6 @@ async def get_session_accounts(credentials: HTTPAuthorizationCredentials = Depen
         if not isinstance(accs, list):
             raise HTTPException(status_code=401, detail="Malformed session data.")
         return [AccountPayload(**a) for a in accs]
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to parse session accounts")
         raise HTTPException(status_code=401, detail="Invalid session data format.")

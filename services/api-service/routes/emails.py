@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 from typing import List, Dict, Any, Optional, Annotated
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, Path
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from config.settings import settings
@@ -13,6 +13,20 @@ from redis_client import redis_manager
 logger = logging.getLogger(__name__)
 router = APIRouter()
 security = HTTPBearer()
+
+# Reusable API response documentation schemas to avoid duplicates
+_RESPONSES_COMMON = {
+    400: {"description": "Invalid input format or email ID"},
+    403: {"description": "Access denied. Requested email account not in session"},
+    500: {"description": "Internal server error"},
+    502: {"description": "Failed to contact downstream service"}
+}
+
+_RESPONSES_RULES = {
+    403: {"description": "Access denied. Requested email account not in session"},
+    500: {"description": "Internal server error"},
+    502: {"description": "Failed to contact Rule Engine service"}
+}
 
 # Pydantic schemas for request/response payloads
 class GetEmailsRequest(BaseModel):
@@ -120,7 +134,7 @@ async def refresh_google_token(refresh_token: str) -> Optional[str]:
             logger.exception("Exception refreshing Google token")
     return None
 
-@router.get("/unread")
+@router.get("/unread", responses=_RESPONSES_COMMON)
 async def get_unread_emails_legacy(
     background_tasks: BackgroundTasks,
     accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)],
@@ -345,7 +359,7 @@ def _compute_hybrid_priority(email: dict, r_info: dict, ai_info: Optional[dict])
     email["final_score"] = final_score
 
 
-@router.post("/unread", response_model=GetEmailsResponse)
+@router.post("/unread", response_model=GetEmailsResponse, responses=_RESPONSES_COMMON)
 async def fetch_and_prioritize_emails(
     payload: GetEmailsRequest,
     background_tasks: BackgroundTasks,
@@ -376,7 +390,7 @@ async def fetch_and_prioritize_emails(
     read_emails = [e for e in all_emails if e.get("read_status") == "read"]
     
     # 3. Check database cache for unread emails
-    cached_unread_emails, uncached_unread_emails = await _enrich_cached_emails(unread_emails)
+    _, uncached_unread_emails = await _enrich_cached_emails(unread_emails)
     
     # 4. Analyze uncached unread emails (rules engine + AI)
     if uncached_unread_emails:
@@ -448,7 +462,7 @@ async def fetch_and_prioritize_emails(
     
     return GetEmailsResponse(emails=sorted_emails, refreshed_tokens=refreshed_tokens)
 
-@router.get("/search", response_model=GetEmailsResponse)
+@router.get("/search", response_model=GetEmailsResponse, responses=_RESPONSES_COMMON)
 async def search_emails(
     q: str = Query(..., description="Gmail search query string"),
     accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None,
@@ -734,6 +748,9 @@ async def perform_gmail_action(
     accounts: List[AccountPayload],
     target_email: Optional[str] = None
 ):
+    if not id or not id.isalnum():
+        raise HTTPException(status_code=400, detail="Invalid email ID format.")
+
     candidate_accounts = accounts
     if target_email:
         candidate_accounts = [acc for acc in accounts if acc.email == target_email]
@@ -770,9 +787,9 @@ async def perform_gmail_action(
     raise HTTPException(status_code=400, detail="No active accounts to perform action.")
 
 # Label Management Endpoints
-@router.post("/{id}/read")
+@router.post("/{id}/read", responses=_RESPONSES_COMMON)
 async def mark_read(
-    id: str,
+    id: Annotated[str, Path(..., description="The message ID to mark as read")],
     email: Optional[str] = None,
     accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
@@ -781,9 +798,9 @@ async def mark_read(
     """
     return await perform_gmail_action(id, "read", accounts, email)
 
-@router.post("/{id}/unread")
+@router.post("/{id}/unread", responses=_RESPONSES_COMMON)
 async def mark_unread(
-    id: str,
+    id: Annotated[str, Path(..., description="The message ID to mark as unread")],
     email: Optional[str] = None,
     accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
@@ -792,9 +809,9 @@ async def mark_unread(
     """
     return await perform_gmail_action(id, "unread", accounts, email)
 
-@router.post("/{id}/move-to-inbox")
+@router.post("/{id}/move-to-inbox", responses=_RESPONSES_COMMON)
 async def move_to_inbox(
-    id: str,
+    id: Annotated[str, Path(..., description="The message ID to move to Inbox")],
     email: Optional[str] = None,
     accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
@@ -803,9 +820,9 @@ async def move_to_inbox(
     """
     return await perform_gmail_action(id, "move-to-inbox", accounts, email)
 
-@router.post("/{id}/mark-safe")
+@router.post("/{id}/mark-safe", responses=_RESPONSES_COMMON)
 async def mark_safe(
-    id: str,
+    id: Annotated[str, Path(..., description="The message ID to mark as safe")],
     payload: MarkSafeRequest,
     email: Optional[str] = None,
     accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
@@ -836,7 +853,7 @@ async def mark_safe(
     return await perform_gmail_action(id, "move-to-inbox", accounts, email)
 
 # Proxy endpoints for rules configuration
-@router.get("/config/rules")
+@router.get("/config/rules", responses=_RESPONSES_RULES)
 async def get_rules_proxy(
     user_id: Optional[str] = None,
     accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
@@ -859,7 +876,7 @@ async def get_rules_proxy(
         except httpx.HTTPError as e:
             raise HTTPException(status_code=502, detail=f"Failed to contact Rule Engine: {str(e)}")
 
-@router.post("/config/rules")
+@router.post("/config/rules", responses=_RESPONSES_RULES)
 async def update_rules_proxy(
     rules: dict,
     user_id: Optional[str] = None,

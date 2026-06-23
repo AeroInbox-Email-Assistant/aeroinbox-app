@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
     await redis_manager.initialize()
     try:
         await pg_initialize_db()
-    except Exception as ex:
+    except Exception:
         logger.exception("Failed to initialize PostgreSQL database on startup")
     yield
     # Shutdown: Close pools
@@ -224,7 +224,7 @@ async def process_email(payload: dict):
                 try:
                     ai_score = _compute_ai_score(ai_analysis)
                     await _update_email_cache(email_id, user_id, ai_analysis, ai_score)
-                except Exception as db_ex:
+                except Exception:
                     logger.exception("Failed to update on-demand cache")
 
             return ai_analysis

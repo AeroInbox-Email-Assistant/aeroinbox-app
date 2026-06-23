@@ -2,18 +2,32 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Depends
 from config.settings import settings
 from auth_deps import get_session_accounts, AccountPayload
-from typing import List
+from typing import List, Annotated
 
 router = APIRouter()
 
-@router.get("")
+# Constants to avoid duplicating literals
+_DENIED_SESSION = "Access denied. Account not in session."
+_DENIED_MISMATCH = "Access denied. Meeting owner mismatch."
+_ERR_COMMUNICATION = "Failed to communicate with Meeting Service"
+
+_RESPONSES_403_502 = {
+    403: {"description": "Access denied due to session or ownership mismatch"},
+    502: {"description": "Failed to communicate with backend Meeting Service"}
+}
+
+_RESPONSES_502 = {
+    502: {"description": "Failed to communicate with backend Meeting Service"}
+}
+
+@router.get("", responses=_RESPONSES_403_502)
 async def get_meetings(
-    user_id: str = Query(...),
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    user_id: Annotated[str, Query(...)],
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     # Security check: verify that user_id matches one of the emails in the session
     if not any(acc.email == user_id for acc in accounts):
-        raise HTTPException(status_code=403, detail="Access denied. Account not in session.")
+        raise HTTPException(status_code=403, detail=_DENIED_SESSION)
 
     async with httpx.AsyncClient() as client:
         try:
@@ -26,16 +40,16 @@ async def get_meetings(
                 raise HTTPException(status_code=response.status_code, detail=response.text)
             return response.json()
         except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Failed to communicate with Meeting Service: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"{_ERR_COMMUNICATION}: {str(e)}")
 
-@router.get("/pending")
+@router.get("/pending", responses=_RESPONSES_403_502)
 async def get_pending_meetings(
-    user_id: str = Query(...),
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    user_id: Annotated[str, Query(...)],
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     # Security check: verify that user_id matches one of the emails in the session
     if not any(acc.email == user_id for acc in accounts):
-        raise HTTPException(status_code=403, detail="Access denied. Account not in session.")
+        raise HTTPException(status_code=403, detail=_DENIED_SESSION)
 
     async with httpx.AsyncClient() as client:
         try:
@@ -48,12 +62,12 @@ async def get_pending_meetings(
                 raise HTTPException(status_code=response.status_code, detail=response.text)
             return response.json()
         except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Failed to communicate with Meeting Service: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"{_ERR_COMMUNICATION}: {str(e)}")
 
-@router.post("/{id}/confirm")
+@router.post("/{id}/confirm", responses=_RESPONSES_403_502)
 async def confirm_meeting(
     id: int,
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     async with httpx.AsyncClient() as client:
         try:
@@ -67,16 +81,16 @@ async def confirm_meeting(
             meeting = response.json()
             # Security check: verify that returned meeting's user_id is in session
             if not any(acc.email == meeting.get("user_id") for acc in accounts):
-                raise HTTPException(status_code=403, detail="Access denied. Meeting owner mismatch.")
+                raise HTTPException(status_code=403, detail=_DENIED_MISMATCH)
             
             return meeting
         except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Failed to communicate with Meeting Service: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"{_ERR_COMMUNICATION}: {str(e)}")
 
-@router.post("/{id}/dismiss")
+@router.post("/{id}/dismiss", responses=_RESPONSES_403_502)
 async def dismiss_meeting(
     id: int,
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     async with httpx.AsyncClient() as client:
         try:
@@ -90,16 +104,16 @@ async def dismiss_meeting(
             meeting = response.json()
             # Security check: verify that returned meeting's user_id is in session
             if not any(acc.email == meeting.get("user_id") for acc in accounts):
-                raise HTTPException(status_code=403, detail="Access denied. Meeting owner mismatch.")
+                raise HTTPException(status_code=403, detail=_DENIED_MISMATCH)
             
             return meeting
         except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Failed to communicate with Meeting Service: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"{_ERR_COMMUNICATION}: {str(e)}")
 
-@router.post("/{id}/accept-update")
+@router.post("/{id}/accept-update", responses=_RESPONSES_403_502)
 async def accept_update(
     id: int,
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     async with httpx.AsyncClient() as client:
         try:
@@ -113,16 +127,16 @@ async def accept_update(
             meeting = response.json()
             # Security check: verify that returned meeting's user_id is in session
             if not any(acc.email == meeting.get("user_id") for acc in accounts):
-                raise HTTPException(status_code=403, detail="Access denied. Meeting owner mismatch.")
+                raise HTTPException(status_code=403, detail=_DENIED_MISMATCH)
             
             return meeting
         except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Failed to communicate with Meeting Service: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"{_ERR_COMMUNICATION}: {str(e)}")
 
-@router.post("/{id}/remove")
+@router.post("/{id}/remove", responses=_RESPONSES_403_502)
 async def remove_meeting(
     id: int,
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     async with httpx.AsyncClient() as client:
         try:
@@ -136,20 +150,20 @@ async def remove_meeting(
             meeting = response.json()
             # Security check: verify that returned meeting's user_id is in session
             if not any(acc.email == meeting.get("user_id") for acc in accounts):
-                raise HTTPException(status_code=403, detail="Access denied. Meeting owner mismatch.")
+                raise HTTPException(status_code=403, detail=_DENIED_MISMATCH)
             
             return meeting
         except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Failed to communicate with Meeting Service: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"{_ERR_COMMUNICATION}: {str(e)}")
 
-@router.get("/upcoming")
+@router.get("/upcoming", responses=_RESPONSES_403_502)
 async def get_upcoming_meetings(
-    user_id: str = Query(...),
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    user_id: Annotated[str, Query(...)],
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     # Security check: verify that user_id matches one of the emails in the session
     if not any(acc.email == user_id for acc in accounts):
-        raise HTTPException(status_code=403, detail="Access denied. Account not in session.")
+        raise HTTPException(status_code=403, detail=_DENIED_SESSION)
 
     async with httpx.AsyncClient() as client:
         try:
@@ -162,16 +176,16 @@ async def get_upcoming_meetings(
                 raise HTTPException(status_code=response.status_code, detail=response.text)
             return response.json()
         except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Failed to communicate with Meeting Service: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"{_ERR_COMMUNICATION}: {str(e)}")
 
-@router.get("/dashboard")
+@router.get("/dashboard", responses=_RESPONSES_403_502)
 async def get_dashboard(
-    user_id: str = Query(...),
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    user_id: Annotated[str, Query(...)],
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     # Security check: verify that user_id matches one of the emails in the session
     if not any(acc.email == user_id for acc in accounts):
-        raise HTTPException(status_code=403, detail="Access denied. Account not in session.")
+        raise HTTPException(status_code=403, detail=_DENIED_SESSION)
 
     async with httpx.AsyncClient() as client:
         try:
@@ -184,9 +198,9 @@ async def get_dashboard(
                 raise HTTPException(status_code=response.status_code, detail=response.text)
             return response.json()
         except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Failed to communicate with Meeting Service: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"{_ERR_COMMUNICATION}: {str(e)}")
 
-@router.post("/reminders/{id}/trigger")
+@router.post("/reminders/{id}/trigger", responses=_RESPONSES_502)
 async def trigger_reminder_proxy(id: int):
     """
     Proxies reminder trigger callback to meeting service.
@@ -201,18 +215,18 @@ async def trigger_reminder_proxy(id: int):
                 raise HTTPException(status_code=response.status_code, detail=response.text)
             return response.json()
         except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Failed to communicate with Meeting Service: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"{_ERR_COMMUNICATION}: {str(e)}")
 
-@router.get("/reminders/pending")
+@router.get("/reminders/pending", responses=_RESPONSES_403_502)
 async def get_pending_reminders_proxy(
-    user_id: str = Query(...),
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    user_id: Annotated[str, Query(...)],
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     """
     Proxies GET pending reminders request to meeting service.
     """
     if not any(acc.email == user_id for acc in accounts):
-        raise HTTPException(status_code=403, detail="Access denied. Account not in session.")
+        raise HTTPException(status_code=403, detail=_DENIED_SESSION)
         
     async with httpx.AsyncClient() as client:
         try:
@@ -225,12 +239,12 @@ async def get_pending_reminders_proxy(
                 raise HTTPException(status_code=response.status_code, detail=response.text)
             return response.json()
         except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Failed to communicate with Meeting Service: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"{_ERR_COMMUNICATION}: {str(e)}")
 
-@router.post("/reminders/{id}/acknowledge")
+@router.post("/reminders/{id}/acknowledge", responses=_RESPONSES_502)
 async def acknowledge_reminder_proxy(
     id: int,
-    accounts: List[AccountPayload] = Depends(get_session_accounts)
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
 ):
     """
     Proxies reminder acknowledgment request to meeting service.
@@ -245,5 +259,4 @@ async def acknowledge_reminder_proxy(
                 raise HTTPException(status_code=response.status_code, detail=response.text)
             return response.json()
         except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Failed to communicate with Meeting Service: {str(e)}")
-
+            raise HTTPException(status_code=502, detail=f"{_ERR_COMMUNICATION}: {str(e)}")

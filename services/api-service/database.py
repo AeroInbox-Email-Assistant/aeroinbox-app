@@ -27,7 +27,7 @@ class PostgresPoolManager:
                 self.token_expiry = datetime.datetime.fromtimestamp(token_obj.expires_on, datetime.timezone.utc)
                 logger.info(f"Retrieved Entra ID token for api-service, expires at: {self.token_expiry}")
                 return token_obj.token
-            except Exception as e:
+            except Exception:
                 logger.exception("Failed to fetch Entra ID token in api-service")
                 return settings.DB_PASSWORD
         else:

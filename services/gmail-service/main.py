@@ -5,7 +5,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 # pyrefly: ignore [missing-import]
 from prometheus_fastapi_instrumentator import Instrumentator    
-from typing import List, Optional
+from typing import List, Optional, Annotated
 import asyncio
 from services.gmail_service import fetch_emails, modify_message_labels, search_emails
 from config import settings
@@ -20,8 +20,8 @@ if settings.APPLICATIONINSIGHTS_CONNECTION_STRING:
         from azure.monitor.opentelemetry import configure_azure_monitor
         configure_azure_monitor(connection_string=settings.APPLICATIONINSIGHTS_CONNECTION_STRING)
         logger.info("Azure Monitor OpenTelemetry configured successfully for gmail-service.")
-    except Exception as e:
-        logger.error(f"Failed to configure Azure Monitor OpenTelemetry: {str(e)}")
+    except Exception:
+        logger.exception("Failed to configure Azure Monitor OpenTelemetry")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -54,7 +54,7 @@ class ModifyLabelsRequest(BaseModel):
     remove_labels: List[str] = []
 
 @app.get("/unread")
-async def get_unread(credentials: HTTPAuthorizationCredentials = Depends(security)):
+async def get_unread(credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)]):
     """
     Exposes a backward-compatible endpoint to fetch unread emails for a single token.
     """
@@ -77,8 +77,8 @@ async def fetch_multi_account_emails(payload: FetchEmailsRequest):
             for email in emails:
                 email["account_email"] = acc.email
             return emails
-        except Exception as e:
-            logger.error(f"Error fetching emails for {acc.email}: {str(e)}")
+        except Exception:
+            logger.exception(f"Error fetching emails for {acc.email}")
             return []
 
     tasks = [fetch_one(acc) for acc in payload.accounts]
@@ -111,8 +111,8 @@ async def search_multi_account_emails(payload: SearchEmailsRequest):
             for email in emails:
                 email["account_email"] = acc.email
             return emails
-        except Exception as e:
-            logger.error(f"Error searching emails for {acc.email}: {str(e)}")
+        except Exception:
+            logger.exception(f"Error searching emails for {acc.email}")
             return []
 
     tasks = [search_one(acc) for acc in payload.accounts]
@@ -195,15 +195,15 @@ async def ready(response: Response):
             "status": "ready",
             "service": "gmail-service"
         }
-    except Exception as e:
-        logger.error(f"Readiness check failed - Key Vault connection error: {str(e)}")
+    except Exception:
+        logger.exception("Readiness check failed - Key Vault connection error")
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
             "status": "not ready",
             "service": "gmail-service",
-            "error": str(e)
+            "error": "Key Vault connection error"
         }
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000)

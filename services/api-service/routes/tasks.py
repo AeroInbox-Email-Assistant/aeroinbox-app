@@ -1,6 +1,6 @@
 import logging
 import datetime
-from typing import List, Optional
+from typing import List, Optional, Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -10,6 +10,20 @@ from auth_deps import get_session_accounts, AccountPayload
 logger = logging.getLogger(__name__)
 router = APIRouter()
 security = HTTPBearer()
+
+# Shared response descriptions to document HTTP exceptions and avoid duplicates
+_RESPONSES_500 = {
+    500: {"description": "Internal server error"}
+}
+_RESPONSES_400_404_500 = {
+    400: {"description": "Invalid parameter or status value"},
+    404: {"description": "Task not found"},
+    500: {"description": "Internal server error"}
+}
+_RESPONSES_404_500 = {
+    404: {"description": "Task not found"},
+    500: {"description": "Internal server error"}
+}
 
 class TaskCreate(BaseModel):
     user_id: str
@@ -24,19 +38,21 @@ class SettingsUpdate(BaseModel):
     user_id: str
     reminder_interval_hours: int # e.g. 1, 2, 4, or 0/ -1 for disabled
 
-@router.get("")
-async def get_tasks(user_id: str = Query(..., description="The user's email address to filter tasks")):
+@router.get("", responses=_RESPONSES_500)
+async def get_tasks(
+    user_id: Annotated[str, Query(..., description="The user's email address to filter tasks")]
+):
     try:
         rows = await pg_db.fetch(
             "SELECT * FROM user_tasks WHERE user_id = $1 ORDER BY created_at DESC",
             user_id
         )
         return [dict(row) for row in rows]
-    except Exception as e:
-        logger.error(f"Failed to fetch tasks for user {user_id}: {str(e)}")
+    except Exception:
+        logger.exception("Failed to fetch tasks for user %s", user_id)
         raise HTTPException(status_code=500, detail="Failed to fetch tasks")
 
-@router.post("")
+@router.post("", responses=_RESPONSES_500)
 async def create_task(payload: TaskCreate):
     try:
         row = await pg_db.fetchrow(
@@ -52,11 +68,11 @@ async def create_task(payload: TaskCreate):
             payload.due_date
         )
         return dict(row)
-    except Exception as e:
-        logger.error(f"Failed to create manual task for user {payload.user_id}: {str(e)}")
+    except Exception:
+        logger.exception("Failed to create manual task for user %s", payload.user_id)
         raise HTTPException(status_code=500, detail="Failed to create task")
 
-@router.put("/{task_id}")
+@router.put("/{task_id}", responses=_RESPONSES_400_404_500)
 async def update_task(task_id: int, payload: TaskUpdate):
     if payload.status not in ("pending", "completed", "dismissed"):
         raise HTTPException(status_code=400, detail="Invalid status value")
@@ -76,11 +92,11 @@ async def update_task(task_id: int, payload: TaskUpdate):
         return dict(row)
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Failed to update task {task_id}: {str(e)}")
+    except Exception:
+        logger.exception("Failed to update task %s", task_id)
         raise HTTPException(status_code=500, detail="Failed to update task")
 
-@router.delete("/{task_id}")
+@router.delete("/{task_id}", responses=_RESPONSES_404_500)
 async def delete_task(task_id: int):
     try:
         result = await pg_db.execute("DELETE FROM user_tasks WHERE id = $1", task_id)
@@ -89,12 +105,14 @@ async def delete_task(task_id: int):
         return {"status": "success", "message": f"Task {task_id} deleted"}
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Failed to delete task {task_id}: {str(e)}")
+    except Exception:
+        logger.exception("Failed to delete task %s", task_id)
         raise HTTPException(status_code=500, detail="Failed to delete task")
 
-@router.get("/settings")
-async def get_settings(user_id: str = Query(..., description="The user's email address")):
+@router.get("/settings", responses=_RESPONSES_500)
+async def get_settings(
+    user_id: Annotated[str, Query(..., description="The user's email address")]
+):
     try:
         row = await pg_db.fetchrow("SELECT * FROM user_settings WHERE user_id = $1", user_id)
         if not row:
@@ -108,11 +126,11 @@ async def get_settings(user_id: str = Query(..., description="The user's email a
                 user_id
             )
         return dict(row)
-    except Exception as e:
-        logger.error(f"Failed to fetch settings for user {user_id}: {str(e)}")
+    except Exception:
+        logger.exception("Failed to fetch settings for user %s", user_id)
         raise HTTPException(status_code=500, detail="Failed to fetch settings")
 
-@router.post("/settings")
+@router.post("/settings", responses=_RESPONSES_500)
 async def save_settings(payload: SettingsUpdate):
     try:
         row = await pg_db.fetchrow(
@@ -128,12 +146,14 @@ async def save_settings(payload: SettingsUpdate):
             payload.reminder_interval_hours
         )
         return dict(row)
-    except Exception as e:
-        logger.error(f"Failed to save settings for user {payload.user_id}: {str(e)}")
+    except Exception:
+        logger.exception("Failed to save settings for user %s", payload.user_id)
         raise HTTPException(status_code=500, detail="Failed to save settings")
 
-@router.get("/reminders/pending")
-async def get_pending_reminders(user_id: str = Query(..., description="The user's email address")):
+@router.get("/reminders/pending", responses=_RESPONSES_500)
+async def get_pending_reminders(
+    user_id: Annotated[str, Query(..., description="The user's email address")]
+):
     try:
         # Get settings
         row = await pg_db.fetchrow("SELECT * FROM user_settings WHERE user_id = $1", user_id)
@@ -176,6 +196,7 @@ async def get_pending_reminders(user_id: str = Query(..., description="The user'
                 return [dict(t) for t in pending_tasks]
                 
         return []
-    except Exception as e:
-        logger.error(f"Failed to check pending reminders for user {user_id}: {str(e)}")
+    except Exception:
+        logger.exception("Failed to check pending reminders for user %s", user_id)
         raise HTTPException(status_code=500, detail="Failed to check reminders")
+

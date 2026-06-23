@@ -79,17 +79,17 @@ async def _fetch_user_email(access_token: str) -> str:
     return ""
 
 
-async def _upsert_session(redis_client, session_id: str, email: str, access_token: str, refresh_token: str):
-    session_key = f"session:{session_id}"
-    existing_accounts = []
-    session_data = await redis_client.get(session_key)
-    if session_data:
-        try:
-            existing_accounts = json.loads(session_data)
-        except Exception:
-            existing_accounts = []
+def _get_existing_accounts(session_data: Optional[str]) -> list:
+    if not session_data:
+        return []
+    try:
+        accs = json.loads(session_data)
+        return accs if isinstance(accs, list) else []
+    except Exception:
+        return []
 
-    # Filter/update accounts list
+
+def _build_updated_accounts(existing_accounts: list, email: str, access_token: str, refresh_token: str) -> tuple[list, bool]:
     updated_accounts = []
     account_added = False
     for acc in existing_accounts:
@@ -101,6 +101,15 @@ async def _upsert_session(redis_client, session_id: str, email: str, access_toke
             account_added = True
         else:
             updated_accounts.append(acc)
+    return updated_accounts, account_added
+
+
+async def _upsert_session(redis_client, session_id: str, email: str, access_token: str, refresh_token: str):
+    session_key = f"session:{session_id}"
+    session_data = await redis_client.get(session_key)
+    
+    existing_accounts = _get_existing_accounts(session_data)
+    updated_accounts, account_added = _build_updated_accounts(existing_accounts, email, access_token, refresh_token)
 
     if not account_added:
         updated_accounts.append({

@@ -60,6 +60,49 @@ def extract_body(payload):
                 
     return plain_text if plain_text else html_text
 
+def _parse_message_detail(service, msg_id: str) -> Optional[dict]:
+    detail = service.users().messages().get(
+        userId='me',
+        id=msg_id,
+        format='full'
+    ).execute()
+    
+    label_ids = detail.get('labelIds', [])
+    thread_id = detail.get('threadId', '')
+    
+    if 'TRASH' in label_ids:
+        return None
+        
+    payload = detail.get('payload', {})
+    headers = payload.get('headers', [])
+    
+    subject = next((h.get('value') for h in headers if h.get('name', '').lower() == 'subject'), 'No Subject')
+    sender = next((h.get('value') for h in headers if h.get('name', '').lower() == 'from'), 'Unknown Sender')
+    date = next((h.get('value') for h in headers if h.get('name', '').lower() == 'date'), 'Unknown Date')
+    
+    body = extract_body(payload)
+    snippet = detail.get('snippet', '')
+    internal_date = int(detail.get('internalDate', 0))
+    
+    read_status = "read" if "UNREAD" not in label_ids else "unread"
+    folder = "SPAM" if "SPAM" in label_ids else "INBOX"
+    
+    return {
+        "id": msg_id,
+        "sender": sender,
+        "subject": subject,
+        "date": date,
+        "snippet": snippet,
+        "body": body,
+        "read_status": read_status,
+        "folder": folder,
+        "timestamp": internal_date,
+        "thread_id": thread_id,
+        "label_ids": label_ids
+    }
+
+from typing import Optional
+
 async def fetch_emails(access_token: str, include_read: bool = False, max_results: int = 15):
     """
     Fetches emails from the authenticated user's Gmail inbox and spam folders.
@@ -81,49 +124,13 @@ async def fetch_emails(access_token: str, include_read: bool = False, max_result
         email_list = []
         
         for msg in messages:
-            msg_id = msg['id']
-            # Fetch the complete message object
-            detail = service.users().messages().get(
-                userId='me',
-                id=msg_id,
-                format='full'
-            ).execute()
-            
-            label_ids = detail.get('labelIds', [])
-            thread_id = detail.get('threadId', '')
-            
-            # Skip if message is in Trash or not in Inbox/Spam folders
-            if 'TRASH' in label_ids:
+            parsed = _parse_message_detail(service, msg['id'])
+            if not parsed:
                 continue
+            label_ids = parsed.pop("label_ids")
             if 'INBOX' not in label_ids and 'SPAM' not in label_ids:
                 continue
-                
-            payload = detail.get('payload', {})
-            headers = payload.get('headers', [])
-            
-            subject = next((h.get('value') for h in headers if h.get('name', '').lower() == 'subject'), 'No Subject')
-            sender = next((h.get('value') for h in headers if h.get('name', '').lower() == 'from'), 'Unknown Sender')
-            date = next((h.get('value') for h in headers if h.get('name', '').lower() == 'date'), 'Unknown Date')
-            
-            body = extract_body(payload)
-            snippet = detail.get('snippet', '')
-            internal_date = int(detail.get('internalDate', 0))
-            
-            read_status = "read" if "UNREAD" not in label_ids else "unread"
-            folder = "SPAM" if "SPAM" in label_ids else "INBOX"
-            
-            email_list.append({
-                "id": msg_id,
-                "sender": sender,
-                "subject": subject,
-                "date": date,
-                "snippet": snippet,
-                "body": body,
-                "read_status": read_status,
-                "folder": folder,
-                "timestamp": internal_date,
-                "thread_id": thread_id
-            })
+            email_list.append(parsed)
             
         return email_list
     except HttpError as error:
@@ -201,47 +208,11 @@ async def search_emails(access_token: str, q: str, max_results: int = 15):
         email_list = []
         
         for msg in messages:
-            msg_id = msg['id']
-            # Fetch the complete message object
-            detail = service.users().messages().get(
-                userId='me',
-                id=msg_id,
-                format='full'
-            ).execute()
-            
-            label_ids = detail.get('labelIds', [])
-            thread_id = detail.get('threadId', '')
-            
-            # Skip if message is in Trash
-            if 'TRASH' in label_ids:
+            parsed = _parse_message_detail(service, msg['id'])
+            if not parsed:
                 continue
-                
-            payload = detail.get('payload', {})
-            headers = payload.get('headers', [])
-            
-            subject = next((h.get('value') for h in headers if h.get('name', '').lower() == 'subject'), 'No Subject')
-            sender = next((h.get('value') for h in headers if h.get('name', '').lower() == 'from'), 'Unknown Sender')
-            date = next((h.get('value') for h in headers if h.get('name', '').lower() == 'date'), 'Unknown Date')
-            
-            body = extract_body(payload)
-            snippet = detail.get('snippet', '')
-            internal_date = int(detail.get('internalDate', 0))
-            
-            read_status = "read" if "UNREAD" not in label_ids else "unread"
-            folder = "SPAM" if "SPAM" in label_ids else "INBOX"
-            
-            email_list.append({
-                "id": msg_id,
-                "sender": sender,
-                "subject": subject,
-                "date": date,
-                "snippet": snippet,
-                "body": body,
-                "read_status": read_status,
-                "folder": folder,
-                "timestamp": internal_date,
-                "thread_id": thread_id
-            })
+            parsed.pop("label_ids", None)
+            email_list.append(parsed)
             
         return email_list
     except HttpError as error:
