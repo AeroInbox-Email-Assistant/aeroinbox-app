@@ -10,11 +10,38 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+_AUTH_ERROR_MSG = "Auth error encountered, refreshing pool..."
+
 class Participant(BaseModel):
     id: Optional[int] = None
     meeting_id: Optional[int] = None
     participant_email: str
     participant_name: Optional[str] = None
+
+
+def _parse_row_participants(parts_data, meeting_id: Optional[int]) -> List[Participant]:
+    participants = []
+    if not parts_data:
+        return participants
+    
+    if isinstance(parts_data, str):
+        try:
+            parts_list = json.loads(parts_data)
+        except Exception:
+            parts_list = []
+    else:
+        parts_list = parts_data
+    
+    if isinstance(parts_list, list):
+        for pr in parts_list:
+            participants.append(Participant(
+                id=pr.get("id"),
+                meeting_id=pr.get("meeting_id") or meeting_id,
+                participant_email=pr.get("participant_email"),
+                participant_name=pr.get("participant_name")
+            ))
+    return participants
+
 
 class Meeting(BaseModel):
     id: Optional[int] = None
@@ -105,7 +132,7 @@ class PostgreSQLMeetingRepository(MeetingRepository):
         self.pool = None
         self.token_expiry = None
 
-    async def get_password(self) -> str:
+    def get_password(self) -> str:
         if settings.DB_AUTH_METHOD == "entra":
             try:
                 credential = DefaultAzureCredential()
@@ -114,15 +141,15 @@ class PostgreSQLMeetingRepository(MeetingRepository):
                 self.token_expiry = datetime.datetime.fromtimestamp(token_obj.expires_on, datetime.timezone.utc)
                 logger.info(f"Retrieved Entra ID token, expires at: {self.token_expiry}")
                 return token_obj.token
-            except Exception as e:
-                logger.error(f"Failed to fetch Entra ID token: {str(e)}")
+            except Exception:
+                logger.exception("Failed to fetch Entra ID token")
                 # Fall back to standard password
                 return settings.DB_PASSWORD
         else:
             return settings.DB_PASSWORD
 
     async def initialize_pool(self):
-        password = await self.get_password()
+        password = self.get_password()
         ssl_arg = "require" if settings.DB_SSL.lower() in ("true", "1", "yes") else None
         
         self.pool = await asyncpg.create_pool(
@@ -162,7 +189,7 @@ class PostgreSQLMeetingRepository(MeetingRepository):
         try:
             return await pool.execute(query, *args)
         except asyncpg.exceptions.InvalidAuthorizationSpecificationError:
-            logger.warning("Auth error encountered, refreshing pool...")
+            logger.warning(_AUTH_ERROR_MSG)
             await self.close()
             pool = await self.get_pool()
             return await pool.execute(query, *args)
@@ -172,7 +199,7 @@ class PostgreSQLMeetingRepository(MeetingRepository):
         try:
             return await pool.fetch(query, *args)
         except asyncpg.exceptions.InvalidAuthorizationSpecificationError:
-            logger.warning("Auth error encountered, refreshing pool...")
+            logger.warning(_AUTH_ERROR_MSG)
             await self.close()
             pool = await self.get_pool()
             return await pool.fetch(query, *args)
@@ -182,7 +209,7 @@ class PostgreSQLMeetingRepository(MeetingRepository):
         try:
             return await pool.fetchrow(query, *args)
         except asyncpg.exceptions.InvalidAuthorizationSpecificationError:
-            logger.warning("Auth error encountered, refreshing pool...")
+            logger.warning(_AUTH_ERROR_MSG)
             await self.close()
             pool = await self.get_pool()
             return await pool.fetchrow(query, *args)
@@ -192,7 +219,7 @@ class PostgreSQLMeetingRepository(MeetingRepository):
         try:
             return await pool.fetchval(query, *args)
         except asyncpg.exceptions.InvalidAuthorizationSpecificationError:
-            logger.warning("Auth error encountered, refreshing pool...")
+            logger.warning(_AUTH_ERROR_MSG)
             await self.close()
             pool = await self.get_pool()
             return await pool.fetchval(query, *args)
@@ -275,24 +302,7 @@ class PostgreSQLMeetingRepository(MeetingRepository):
     def _row_to_meeting(self, row) -> Meeting:
         m_dict = dict(row)
         parts_data = m_dict.pop("participants", None)
-        participants = []
-        if parts_data:
-            if isinstance(parts_data, str):
-                try:
-                    parts_list = json.loads(parts_data)
-                except Exception:
-                    parts_list = []
-            else:
-                parts_list = parts_data
-            
-            if isinstance(parts_list, list):
-                for pr in parts_list:
-                    participants.append(Participant(
-                        id=pr.get("id"),
-                        meeting_id=pr.get("meeting_id") or m_dict.get("id"),
-                        participant_email=pr.get("participant_email"),
-                        participant_name=pr.get("participant_name")
-                    ))
+        participants = _parse_row_participants(parts_data, m_dict.get("id"))
         
         return Meeting(
             id=m_dict["id"],
@@ -406,7 +416,7 @@ class PostgreSQLMeetingRepository(MeetingRepository):
         return [self._row_to_meeting(row) for row in rows]
 
     async def list_upcoming_meetings(self, user_id: str) -> List[Meeting]:
-        now_str = datetime.datetime.utcnow().isoformat()
+        now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
         rows = await self.fetch(
             "SELECT * FROM meetings WHERE user_id = $1 AND calendar_added_flag = 1 AND start_datetime >= $2 ORDER BY start_datetime ASC",
             user_id, now_str

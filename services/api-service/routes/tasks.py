@@ -11,18 +11,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 security = HTTPBearer()
 
+_INTERNAL_SERVER_ERROR = "Internal server error"
+_TASK_NOT_FOUND = "Task not found"
+
 # Shared response descriptions to document HTTP exceptions and avoid duplicates
 _RESPONSES_500 = {
-    500: {"description": "Internal server error"}
+    500: {"description": _INTERNAL_SERVER_ERROR}
 }
 _RESPONSES_400_404_500 = {
     400: {"description": "Invalid parameter or status value"},
-    404: {"description": "Task not found"},
-    500: {"description": "Internal server error"}
+    404: {"description": _TASK_NOT_FOUND},
+    500: {"description": _INTERNAL_SERVER_ERROR}
 }
 _RESPONSES_404_500 = {
-    404: {"description": "Task not found"},
-    500: {"description": "Internal server error"}
+    404: {"description": _TASK_NOT_FOUND},
+    500: {"description": _INTERNAL_SERVER_ERROR}
 }
 
 class TaskCreate(BaseModel):
@@ -88,7 +91,7 @@ async def update_task(task_id: int, payload: TaskUpdate):
             task_id
         )
         if not row:
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise HTTPException(status_code=404, detail=_TASK_NOT_FOUND)
         return dict(row)
     except HTTPException:
         raise
@@ -101,7 +104,7 @@ async def delete_task(task_id: int):
     try:
         result = await pg_db.execute("DELETE FROM user_tasks WHERE id = $1", task_id)
         if result == "DELETE 0":
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise HTTPException(status_code=404, detail=_TASK_NOT_FOUND)
         return {"status": "success", "message": f"Task {task_id} deleted"}
     except HTTPException:
         raise

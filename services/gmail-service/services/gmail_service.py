@@ -18,6 +18,31 @@ def get_gmail_service(access_token: str):
             detail=f"Failed to initialize Gmail client with provided access token: {str(e)}"
         )
 
+def _parse_multipart_parts(parts) -> tuple[str, str]:
+    plain_text = ""
+    html_text = ""
+    for part in parts:
+        mime_type = part.get("mimeType", "")
+        part_body = part.get("body", {})
+        part_data = part_body.get("data")
+        
+        # Handle nested multipart parts
+        if "parts" in part:
+            nested = extract_body(part)
+            if nested:
+                return nested, ""
+                
+        if part_data:
+            try:
+                decoded = base64.urlsafe_b64decode(part_data).decode("utf-8", errors="ignore")
+                if mime_type == "text/plain":
+                    plain_text += decoded
+                elif mime_type == "text/html":
+                    html_text += decoded
+            except Exception:
+                pass
+    return plain_text, html_text
+
 def extract_body(payload):
     """
     Recursively decodes the body of a Gmail message, supporting plain text and HTML fallback.
@@ -35,30 +60,7 @@ def extract_body(payload):
             
     # 2. Multipart structure
     parts = payload.get("parts", [])
-    plain_text = ""
-    html_text = ""
-    
-    for part in parts:
-        mime_type = part.get("mimeType", "")
-        part_body = part.get("body", {})
-        part_data = part_body.get("data")
-        
-        # Handle nested multipart parts
-        if "parts" in part:
-            nested = extract_body(part)
-            if nested:
-                return nested
-                
-        if part_data:
-            try:
-                decoded = base64.urlsafe_b64decode(part_data).decode("utf-8", errors="ignore")
-                if mime_type == "text/plain":
-                    plain_text += decoded
-                elif mime_type == "text/html":
-                    html_text += decoded
-            except Exception:
-                pass
-                
+    plain_text, html_text = _parse_multipart_parts(parts)
     return plain_text if plain_text else html_text
 
 def _parse_message_detail(service, msg_id: str) -> Optional[dict]:
@@ -104,7 +106,7 @@ def _parse_message_detail(service, msg_id: str) -> Optional[dict]:
 
 from typing import Optional
 
-async def fetch_emails(access_token: str, include_read: bool = False, max_results: int = 15):
+def fetch_emails(access_token: str, include_read: bool = False, max_results: int = 15):
     """
     Fetches emails from the authenticated user's Gmail inbox and spam folders.
     """
@@ -191,7 +193,7 @@ def modify_message_labels(access_token: str, msg_id: str, add_labels: list[str],
             detail=f"Failed to modify message labels: {str(e)}"
         )
 
-async def search_emails(access_token: str, q: str, max_results: int = 15):
+def search_emails(access_token: str, q: str, max_results: int = 15):
     """
     Searches emails using the Gmail API query parameter `q`.
     """
@@ -245,7 +247,7 @@ async def search_emails(access_token: str, q: str, max_results: int = 15):
         )
 
 
-async def check_thread_has_reply(access_token: str, thread_id: str) -> bool:
+def check_thread_has_reply(access_token: str, thread_id: str) -> bool:
     """
     Checks if a thread has any reply sent by the user (meaning a message in the thread has the 'SENT' label).
     """

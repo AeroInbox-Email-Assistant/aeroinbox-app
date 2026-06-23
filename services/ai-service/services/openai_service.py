@@ -433,17 +433,8 @@ def analyze_email_content(email_content: str) -> EmailAnalysis:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI email analysis failed: {str(e)}")
 
-def analyze_emails_bulk(emails: list[dict]) -> dict[str, EmailAnalysisItem]:
-    """
-    Sends a bulk list of emails to LLM in a single request for fast, cost-efficient analysis.
-    Returns a dict mapping message_id -> EmailAnalysisItem.
-    """
-    if not emails:
-        return {}
-
-    results = {}
+def _check_cached_emails(emails: list[dict], results: dict) -> list[dict]:
     emails_to_analyze = []
-    
     for email in emails:
         email_id = email.get("id")
         body_snippet = (email.get("body") or email.get("snippet") or "")[:1200]
@@ -460,6 +451,58 @@ def analyze_emails_bulk(emails: list[dict]) -> dict[str, EmailAnalysisItem]:
                 emails_to_analyze.append(email)
         else:
             emails_to_analyze.append(email)
+    return emails_to_analyze
+
+def _normalize_bulk_response(data_normalized) -> BulkEmailAnalysis:
+    if isinstance(data_normalized, list):
+        data_normalized = {"analyses": data_normalized}
+    elif isinstance(data_normalized, dict) and "analyses" not in data_normalized:
+        # If the keys of the dict are email IDs and values are dicts, convert to list
+        analyses_list = []
+        for k, v in data_normalized.items():
+            if isinstance(v, dict):
+                if "id" not in v:
+                    v["id"] = k
+                analyses_list.append(v)
+        data_normalized = {"analyses": analyses_list}
+    return BulkEmailAnalysis.model_validate(data_normalized)
+
+def _map_bulk_results(bulk_data: BulkEmailAnalysis, emails_to_analyze: list[dict], results: dict):
+    for item in bulk_data.analyses:
+        orig_email = next((e for e in emails_to_analyze if str(e.get("id")).strip().lower() == str(item.id).strip().lower()), None)
+        if orig_email:
+            body_snippet = (orig_email.get("body") or orig_email.get("snippet") or "")[:1200]
+            content_str = f"{orig_email.get('sender')}|{orig_email.get('subject')}|{body_snippet}"
+            h = get_hash(content_str)
+            try:
+                set_cached_email(h, json.dumps(item.model_dump()))
+            except Exception:
+                pass
+            results[orig_email.get("id")] = item
+        else:
+            results[item.id] = item
+
+    # Index-based fallback mapping for any unmapped input emails
+    unmapped_emails = [e for e in emails_to_analyze if e.get("id") not in results]
+    if unmapped_emails:
+        mapped_item_ids = {item.id for item in results.values()}
+        unmapped_analyses = [item for item in bulk_data.analyses if item.id not in mapped_item_ids]
+        for i, email in enumerate(unmapped_emails):
+            if i < len(unmapped_analyses):
+                item = unmapped_analyses[i]
+                item.id = email.get("id")
+                results[email.get("id")] = item
+
+def analyze_emails_bulk(emails: list[dict]) -> dict[str, EmailAnalysisItem]:
+    """
+    Sends a bulk list of emails to LLM in a single request for fast, cost-efficient analysis.
+    Returns a dict mapping message_id -> EmailAnalysisItem.
+    """
+    if not emails:
+        return {}
+
+    results = {}
+    emails_to_analyze = _check_cached_emails(emails, results)
 
     if not emails_to_analyze:
         return results
@@ -509,45 +552,8 @@ def analyze_emails_bulk(emails: list[dict]) -> dict[str, EmailAnalysisItem]:
         data = json.loads(json_str)
         data_normalized = lowercase_keys(data)
         
-        # Robust normalization for Pydantic BulkEmailAnalysis schema
-        if isinstance(data_normalized, list):
-            data_normalized = {"analyses": data_normalized}
-        elif isinstance(data_normalized, dict) and "analyses" not in data_normalized:
-            # If the keys of the dict are email IDs and values are dicts, convert to list
-            analyses_list = []
-            for k, v in data_normalized.items():
-                if isinstance(v, dict):
-                    if "id" not in v:
-                        v["id"] = k
-                    analyses_list.append(v)
-            data_normalized = {"analyses": analyses_list}
-            
-        bulk_data = BulkEmailAnalysis.model_validate(data_normalized)
-        
-        for item in bulk_data.analyses:
-            orig_email = next((e for e in emails_to_analyze if str(e.get("id")).strip().lower() == str(item.id).strip().lower()), None)
-            if orig_email:
-                body_snippet = (orig_email.get("body") or orig_email.get("snippet") or "")[:1200]
-                content_str = f"{orig_email.get('sender')}|{orig_email.get('subject')}|{body_snippet}"
-                h = get_hash(content_str)
-                try:
-                    set_cached_email(h, json.dumps(item.model_dump()))
-                except Exception:
-                    pass
-                results[orig_email.get("id")] = item
-            else:
-                results[item.id] = item
-
-        # Index-based fallback mapping for any unmapped input emails
-        unmapped_emails = [e for e in emails_to_analyze if e.get("id") not in results]
-        if unmapped_emails:
-            mapped_item_ids = {item.id for item in results.values()}
-            unmapped_analyses = [item for item in bulk_data.analyses if item.id not in mapped_item_ids]
-            for i, email in enumerate(unmapped_emails):
-                if i < len(unmapped_analyses):
-                    item = unmapped_analyses[i]
-                    item.id = email.get("id")
-                    results[email.get("id")] = item
+        bulk_data = _normalize_bulk_response(data_normalized)
+        _map_bulk_results(bulk_data, emails_to_analyze, results)
             
         return results
 

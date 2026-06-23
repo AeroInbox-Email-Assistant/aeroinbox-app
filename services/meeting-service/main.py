@@ -20,14 +20,18 @@ from service_bus import schedule_meeting_reminder
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Constants to avoid duplicate literal warnings
+_MEETING_NOT_FOUND = "Meeting not found"
+_REMINDER_NOT_FOUND = "Meeting reminder not found"
+
 # Configure Azure Monitor OpenTelemetry if connection string is provided
 if settings.APPLICATIONINSIGHTS_CONNECTION_STRING:
     try:
         from azure.monitor.opentelemetry import configure_azure_monitor
         configure_azure_monitor(connection_string=settings.APPLICATIONINSIGHTS_CONNECTION_STRING)
         logger.info("Azure Monitor OpenTelemetry configured successfully for meeting-service.")
-    except Exception as e:
-        logger.error(f"Failed to configure Azure Monitor OpenTelemetry: {str(e)}")
+    except Exception:
+        logger.exception("Failed to configure Azure Monitor OpenTelemetry")
 
 repo = PostgreSQLMeetingRepository()
 
@@ -51,10 +55,10 @@ async def reminder_polling_loop():
             )
             for row in rows:
                 m_id = row["meeting_id"]
-                logger.info(f"Background scheduler: reminder due for meeting {m_id}. Triggering...")
+                logger.info("Background scheduler: reminder due for meeting %s. Triggering...", m_id)
                 await repo.trigger_reminder(m_id)
-        except Exception as e:
-            logger.error(f"Error in background reminder scheduler loop: {str(e)}")
+        except Exception:
+            logger.exception("Error in background reminder scheduler loop")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -100,27 +104,18 @@ MEETING_KEYWORDS = [
 class DetectRequest(BaseModel):
     emails: List[dict]
 
-def parse_ics_content(ics_text: str):
-    """
-    Searches and extracts VCALENDAR fields from email body.
-    """
-    match = re.search(r"BEGIN:VCALENDAR.*?END:VCALENDAR", ics_text, re.DOTALL | re.IGNORECASE)
-    if not match:
-        return None
-    
-    block = match.group(0)
-    lines = block.splitlines()
-    
+def _unfold_ics_lines(lines: list[str]) -> list[str]:
     unfolded_lines = []
     for line in lines:
         if line.startswith((" ", "\t")) and unfolded_lines:
             unfolded_lines[-1] += line[1:]
         else:
             unfolded_lines.append(line)
-            
+    return unfolded_lines
+
+def _parse_ics_properties(unfolded_lines: list[str]) -> tuple[dict, list]:
     data = {}
     participants = []
-    
     for line in unfolded_lines:
         if ":" not in line:
             continue
@@ -159,8 +154,20 @@ def parse_ics_content(ics_text: str):
             data["status"] = val.upper()
         elif key == "METHOD":
             data["method"] = val.upper()
-            
     return data, participants
+
+def parse_ics_content(ics_text: str):
+    """
+    Searches and extracts VCALENDAR fields from email body.
+    """
+    match = re.search(r"BEGIN:VCALENDAR.*?END:VCALENDAR", ics_text, re.DOTALL | re.IGNORECASE)
+    if not match:
+        return None
+    
+    block = match.group(0)
+    lines = block.splitlines()
+    unfolded_lines = _unfold_ics_lines(lines)
+    return _parse_ics_properties(unfolded_lines)
 
 def convert_ics_datetime(dt_str: str) -> str:
     """
@@ -208,6 +215,155 @@ def extract_meeting_url(text: str) -> tuple[Optional[str], Optional[str]]:
         
     return None, None
 
+async def _process_single_email(client: httpx.AsyncClient, email: dict):
+    user_id = email.get("account_email")
+    source_email_id = email.get("id")
+    subject = email.get("subject", "")
+    sender = email.get("sender", "")
+    body = email.get("body", "") or email.get("snippet", "") or ""
+    
+    if not user_id or not source_email_id:
+        return
+    
+    existing_by_email = await repo.get_meeting_by_source_email(user_id, source_email_id)
+    if existing_by_email:
+        return
+    
+    # Check for ICS
+    ics_data = parse_ics_content(body)
+    if ics_data:
+        data, parts = ics_data
+        
+        start_dt = convert_ics_datetime(data.get("dtstart", ""))
+        end_dt = convert_ics_datetime(data.get("dtend", "")) if data.get("dtend") else start_dt
+        title = data.get("title", subject or "Meeting Invitation")
+        
+        loc = data.get("location", "")
+        desc = data.get("description", "")
+        meet_url, platform = extract_meeting_url(loc)
+        if not meet_url:
+            meet_url, platform = extract_meeting_url(desc)
+        if not meet_url:
+            platform = "Other"
+            meet_url = loc or ""
+        
+        status = "Confirmed"
+        method = data.get("method", "")
+        ics_status = data.get("status", "")
+        
+        if method == "CANCEL" or ics_status == "CANCELLED" or "cancel" in title.lower() or "cancel" in desc.lower():
+            status = "Cancelled"
+            
+        organizer = data.get("organizer", sender)
+        participants = [Participant(participant_email=p["email"], participant_name=p["name"]) for p in parts]
+        
+        await save_or_update_meeting(
+            user_id=user_id,
+            source_email_id=source_email_id,
+            source_platform="ics",
+            meeting_platform=platform,
+            meeting_url=meet_url,
+            meeting_title=title,
+            description=desc or data.get("description", ""),
+            organizer=organizer,
+            start_datetime=start_dt,
+            end_datetime=end_dt,
+            status=status,
+            participants=participants
+        )
+        return
+
+    # No ICS. Check for regex URL or keyword pre-filtering
+    meet_url, platform = extract_meeting_url(body)
+    if not meet_url:
+        meet_url, platform = extract_meeting_url(subject)
+    
+    has_keywords = has_meeting_keywords(body) or has_meeting_keywords(subject)
+    
+    if meet_url or has_keywords:
+        current_date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        payload = {
+            "email_content": f"From: {sender}\nSubject: {subject}\nBody:\n{body}",
+            "current_date": current_date_str
+        }
+        
+        response = await client.post(
+            f"{AI_SERVICE_URL}/process/meeting",
+            json=payload,
+            timeout=35.0
+        )
+        
+        ai_res = None
+        if response.status_code == 200:
+            ai_res = response.json()
+        else:
+            logger.error("AI service returned non-200 status code %s for email %s: %s", response.status_code, source_email_id, response.text)
+        
+        is_meeting = False
+        if ai_res and ai_res.get("is_meeting"):
+            is_meeting = True
+            ai_title = ai_res.get("meeting_title", subject or "Meeting")
+            ai_platform = ai_res.get("meeting_platform", "Other")
+            ai_url = ai_res.get("meeting_url", "")
+            ai_organizer = ai_res.get("organizer", sender)
+            ai_start_date = ai_res.get("start_date")
+            ai_start_time = ai_res.get("start_time")
+            ai_end_date = ai_res.get("end_date") or ai_start_date
+            ai_end_time = ai_res.get("end_time")
+            
+            start_dt = f"{ai_start_date}T{ai_start_time}:00"
+            end_dt = f"{ai_end_date}T{ai_end_time}:00"
+            
+            action_type = ai_res.get("action_type", "create")
+            status = "Pending"  # Natural language requires user confirmation (Potential)
+            
+            final_url = meet_url or ai_url
+            final_platform = platform or ai_platform
+            if final_url:
+                status = "Confirmed"  # Explicit meeting URL is classified as Confirmed
+                
+            if action_type == "cancel" or "cancel" in ai_title.lower():
+                status = "Cancelled"
+            elif action_type == "update":
+                status = "Updated"
+                
+            ai_parts = ai_res.get("participants", [])
+            participants = [Participant(participant_email=p["email"], participant_name=p.get("name")) for p in ai_parts if p.get("email")]
+            
+            await save_or_update_meeting(
+                user_id=user_id,
+                source_email_id=source_email_id,
+                source_platform="gmail",
+                meeting_platform=final_platform,
+                meeting_url=final_url,
+                meeting_title=ai_title,
+                description=body[:500],
+                organizer=ai_organizer,
+                start_datetime=start_dt,
+                end_datetime=end_dt,
+                status=status,
+                participants=participants
+            )
+        
+        if not is_meeting and meet_url:
+            # Fallback if Gemini failed or said no meeting but url matched
+            start_dt = datetime.now(timezone.utc).isoformat()
+            end_dt = start_dt
+            await save_or_update_meeting(
+                user_id=user_id,
+                source_email_id=source_email_id,
+                source_platform="gmail",
+                meeting_platform=platform,
+                meeting_url=meet_url,
+                meeting_title=subject or "Meeting Link",
+                description=body[:500],
+                organizer=sender,
+                start_datetime=start_dt,
+                end_datetime=end_dt,
+                status="Confirmed",
+                participants=[]
+            )
+
 async def detect_meetings_from_emails(emails: List[dict]):
     """
     Detects and extracts meetings from emails. Operates in background.
@@ -215,155 +371,9 @@ async def detect_meetings_from_emails(emails: List[dict]):
     async with httpx.AsyncClient() as client:
         for email in emails:
             try:
-                user_id = email.get("account_email")
-                source_email_id = email.get("id")
-                subject = email.get("subject", "")
-                sender = email.get("sender", "")
-                body = email.get("body", "") or email.get("snippet", "") or ""
-                
-                if not user_id or not source_email_id:
-                    continue
-                
-                existing_by_email = await repo.get_meeting_by_source_email(user_id, source_email_id)
-                if existing_by_email:
-                    continue
-                
-                # Check for ICS
-                ics_data = parse_ics_content(body)
-                if ics_data:
-                    data, parts = ics_data
-                    
-                    start_dt = convert_ics_datetime(data.get("dtstart", ""))
-                    end_dt = convert_ics_datetime(data.get("dtend", "")) if data.get("dtend") else start_dt
-                    title = data.get("title", subject or "Meeting Invitation")
-                    
-                    loc = data.get("location", "")
-                    desc = data.get("description", "")
-                    meet_url, platform = extract_meeting_url(loc)
-                    if not meet_url:
-                        meet_url, platform = extract_meeting_url(desc)
-                    if not meet_url:
-                        platform = "Other"
-                        meet_url = loc or ""
-                    
-                    status = "Confirmed"
-                    method = data.get("method", "")
-                    ics_status = data.get("status", "")
-                    
-                    if method == "CANCEL" or ics_status == "CANCELLED" or "cancel" in title.lower() or "cancel" in desc.lower():
-                        status = "Cancelled"
-                        
-                    organizer = data.get("organizer", sender)
-                    participants = [Participant(participant_email=p["email"], participant_name=p["name"]) for p in parts]
-                    
-                    await save_or_update_meeting(
-                        user_id=user_id,
-                        source_email_id=source_email_id,
-                        source_platform="ics",
-                        meeting_platform=platform,
-                        meeting_url=meet_url,
-                        meeting_title=title,
-                        description=desc or data.get("description", ""),
-                        organizer=organizer,
-                        start_datetime=start_dt,
-                        end_datetime=end_dt,
-                        status=status,
-                        participants=participants
-                    )
-                    continue
-
-                # No ICS. Check for regex URL or keyword pre-filtering
-                meet_url, platform = extract_meeting_url(body)
-                if not meet_url:
-                    meet_url, platform = extract_meeting_url(subject)
-                
-                has_keywords = has_meeting_keywords(body) or has_meeting_keywords(subject)
-                
-                if meet_url or has_keywords:
-                    current_date_str = datetime.utcnow().strftime("%Y-%m-%d")
-                    payload = {
-                        "email_content": f"From: {sender}\nSubject: {subject}\nBody:\n{body}",
-                        "current_date": current_date_str
-                    }
-                    
-                    response = await client.post(
-                        f"{AI_SERVICE_URL}/process/meeting",
-                        json=payload,
-                        timeout=35.0
-                    )
-                    
-                    ai_res = None
-                    if response.status_code == 200:
-                        ai_res = response.json()
-                    else:
-                        logger.error(f"AI service returned non-200 status code {response.status_code} for email {source_email_id}: {response.text}")
-                    
-                    is_meeting = False
-                    if ai_res and ai_res.get("is_meeting"):
-                        is_meeting = True
-                        ai_title = ai_res.get("meeting_title", subject or "Meeting")
-                        ai_platform = ai_res.get("meeting_platform", "Other")
-                        ai_url = ai_res.get("meeting_url", "")
-                        ai_organizer = ai_res.get("organizer", sender)
-                        ai_start_date = ai_res.get("start_date")
-                        ai_start_time = ai_res.get("start_time")
-                        ai_end_date = ai_res.get("end_date") or ai_start_date
-                        ai_end_time = ai_res.get("end_time")
-                        
-                        start_dt = f"{ai_start_date}T{ai_start_time}:00"
-                        end_dt = f"{ai_end_date}T{ai_end_time}:00"
-                        
-                        action_type = ai_res.get("action_type", "create")
-                        status = "Pending"  # Natural language requires user confirmation (Potential)
-                        
-                        final_url = meet_url or ai_url
-                        final_platform = platform or ai_platform
-                        if final_url:
-                            status = "Confirmed"  # Explicit meeting URL is classified as Confirmed
-                            
-                        if action_type == "cancel" or "cancel" in ai_title.lower():
-                            status = "Cancelled"
-                        elif action_type == "update":
-                            status = "Updated"
-                            
-                        ai_parts = ai_res.get("participants", [])
-                        participants = [Participant(participant_email=p["email"], participant_name=p.get("name")) for p in ai_parts if p.get("email")]
-                        
-                        await save_or_update_meeting(
-                            user_id=user_id,
-                            source_email_id=source_email_id,
-                            source_platform="gmail",
-                            meeting_platform=final_platform,
-                            meeting_url=final_url,
-                            meeting_title=ai_title,
-                            description=body[:500],
-                            organizer=ai_organizer,
-                            start_datetime=start_dt,
-                            end_datetime=end_dt,
-                            status=status,
-                            participants=participants
-                        )
-                    
-                    if not is_meeting and meet_url:
-                        # Fallback if Gemini failed or said no meeting but url matched
-                        start_dt = datetime.utcnow().isoformat()
-                        end_dt = start_dt
-                        await save_or_update_meeting(
-                            user_id=user_id,
-                            source_email_id=source_email_id,
-                            source_platform="gmail",
-                            meeting_platform=platform,
-                            meeting_url=meet_url,
-                            meeting_title=subject or "Meeting Link",
-                            description=body[:500],
-                            organizer=sender,
-                            start_datetime=start_dt,
-                            end_datetime=end_dt,
-                            status="Confirmed",
-                            participants=[]
-                        )
-            except Exception as e:
-                logger.error(f"Error processing meeting detection for email {email.get('id')}: {str(e)}")
+                await _process_single_email(client, email)
+            except Exception:
+                logger.exception("Error processing meeting detection for email %s", email.get('id'))
 
 async def save_or_update_meeting(
     user_id: str,
@@ -379,7 +389,7 @@ async def save_or_update_meeting(
     status: str,
     participants: List[Participant]
 ):
-    now_str = datetime.utcnow().isoformat()
+    now_str = datetime.now(timezone.utc).isoformat()
     
     existing = None
     if meeting_url:
@@ -470,9 +480,9 @@ async def schedule_reminder_for_meeting(meet: Meeting):
             start_time=start_dt,
             reminder_time=reminder_dt
         )
-        logger.info(f"Successfully scheduled reminder for meeting {meet.id} at {reminder_dt}")
-    except Exception as e:
-        logger.error(f"Failed to schedule reminder for meeting {meet.id}: {str(e)}", exc_info=True)
+        logger.info("Successfully scheduled reminder for meeting %s at %s", meet.id, reminder_dt)
+    except Exception:
+        logger.exception("Failed to schedule reminder for meeting %s", meet.id)
 
 # API Routes
 @app.post("/meetings/detect")
@@ -504,10 +514,10 @@ async def confirm_meeting(id: int):
     """
     meet = await repo.get_meeting(id)
     if not meet:
-        raise HTTPException(status_code=404, detail="Meeting not found")
+        raise HTTPException(status_code=404, detail=_MEETING_NOT_FOUND)
     meet.calendar_added_flag = 1
     meet.status = "Confirmed"
-    meet.updated_timestamp = datetime.utcnow().isoformat()
+    meet.updated_timestamp = datetime.now(timezone.utc).isoformat()
     await repo.update_meeting(meet)
     await schedule_reminder_for_meeting(meet)
     return meet
@@ -519,10 +529,10 @@ async def dismiss_meeting(id: int):
     """
     meet = await repo.get_meeting(id)
     if not meet:
-        raise HTTPException(status_code=404, detail="Meeting not found")
+        raise HTTPException(status_code=404, detail=_MEETING_NOT_FOUND)
     meet.calendar_added_flag = 0
     meet.status = "Dismissed"
-    meet.updated_timestamp = datetime.utcnow().isoformat()
+    meet.updated_timestamp = datetime.now(timezone.utc).isoformat()
     await repo.update_meeting(meet)
     return meet
 
@@ -533,11 +543,11 @@ async def accept_meeting_update(id: int):
     """
     meet = await repo.get_meeting(id)
     if not meet:
-        raise HTTPException(status_code=404, detail="Meeting not found")
+        raise HTTPException(status_code=404, detail=_MEETING_NOT_FOUND)
     meet.prev_start_datetime = None
     meet.prev_end_datetime = None
     meet.status = "Confirmed"
-    meet.updated_timestamp = datetime.utcnow().isoformat()
+    meet.updated_timestamp = datetime.now(timezone.utc).isoformat()
     await repo.update_meeting(meet)
     await schedule_reminder_for_meeting(meet)
     return meet
@@ -550,7 +560,7 @@ async def trigger_meeting_reminder_route(id: int):
     """
     success = await repo.trigger_reminder(id)
     if not success:
-        raise HTTPException(status_code=404, detail="Meeting reminder not found")
+        raise HTTPException(status_code=404, detail=_REMINDER_NOT_FOUND)
     return {"status": "success", "message": f"Reminder for meeting {id} triggered"}
 
 @app.get("/meetings/reminders/pending")
@@ -568,7 +578,7 @@ async def acknowledge_meeting_reminder_route(id: int):
     """
     success = await repo.acknowledge_reminder(id)
     if not success:
-        raise HTTPException(status_code=404, detail="Meeting reminder not found")
+        raise HTTPException(status_code=404, detail=_REMINDER_NOT_FOUND)
     return {"status": "success", "message": f"Reminder for meeting {id} acknowledged"}
 
 @app.post("/meetings/{id}/remove")
@@ -578,10 +588,10 @@ async def remove_meeting(id: int):
     """
     meet = await repo.get_meeting(id)
     if not meet:
-        raise HTTPException(status_code=404, detail="Meeting not found")
+        raise HTTPException(status_code=404, detail=_MEETING_NOT_FOUND)
     meet.calendar_added_flag = 0
     meet.status = "Dismissed"
-    meet.updated_timestamp = datetime.utcnow().isoformat()
+    meet.updated_timestamp = datetime.now(timezone.utc).isoformat()
     await repo.update_meeting(meet)
     return meet
 
@@ -599,7 +609,7 @@ async def get_dashboard(user_id: str):
     """
     all_cal = await repo.list_meetings(user_id, calendar_added_only=True)
     
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     # Format today's date in UTC
     today_str = now.strftime("%Y-%m-%d")
     tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -619,7 +629,9 @@ async def get_dashboard(user_id: str):
                 clean_dt_str = clean_dt_str.split("+")[0]
                 
             m_dt = datetime.fromisoformat(clean_dt_str)
-            
+            if m_dt.tzinfo is None:
+                m_dt = m_dt.replace(tzinfo=timezone.utc)
+                
             if m_dt < now:
                 # Started in the past
                 missed_meetings.append(meet)
@@ -683,7 +695,7 @@ async def ready(response: Response):
         pool = await repo.get_pool()
         await pool.execute("SELECT 1")
     except Exception as e:
-        logger.error(f"Readiness check failed - PostgreSQL connection error: {str(e)}")
+        logger.exception("Readiness check failed - PostgreSQL connection error")
         errors.append(f"PostgreSQL: {str(e)}")
         
     # Check Service Bus
@@ -705,7 +717,7 @@ async def ready(response: Response):
             async with client.get_queue_receiver(queue_name=queue_name) as receiver:
                 await receiver.peek_messages(max_message_count=1)
     except Exception as e:
-        logger.error(f"Readiness check failed - Service Bus connection error: {str(e)}")
+        logger.exception("Readiness check failed - Service Bus connection error")
         errors.append(f"Service Bus: {str(e)}")
         
     if errors:
@@ -723,4 +735,5 @@ async def ready(response: Response):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+    # Local dev binds exclusively to 127.0.0.1 loopback for network isolation
+    uvicorn.run("main:app", host="127.0.0.1", port=8000)

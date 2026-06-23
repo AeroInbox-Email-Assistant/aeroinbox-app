@@ -59,7 +59,7 @@ async def get_unread(credentials: Annotated[HTTPAuthorizationCredentials, Depend
     Exposes a backward-compatible endpoint to fetch unread emails for a single token.
     """
     token = credentials.credentials
-    emails = await fetch_emails(access_token=token, include_read=False)
+    emails = fetch_emails(access_token=token, include_read=False)
     return emails
 
 @app.post("/fetch")
@@ -69,7 +69,7 @@ async def fetch_multi_account_emails(payload: FetchEmailsRequest):
     """
     async def fetch_one(acc: AccountCredential):
         try:
-            emails = await fetch_emails(
+            emails = fetch_emails(
                 access_token=acc.access_token,
                 include_read=payload.include_read,
                 max_results=payload.max_results
@@ -103,7 +103,7 @@ async def search_multi_account_emails(payload: SearchEmailsRequest):
     """
     async def search_one(acc: AccountCredential):
         try:
-            emails = await search_emails(
+            emails = search_emails(
                 access_token=acc.access_token,
                 q=payload.q,
                 max_results=payload.max_results
@@ -143,7 +143,7 @@ async def check_reply(thread_id: str, access_token: str):
     Checks if a thread has any reply sent by the user.
     """
     from services.gmail_service import check_thread_has_reply
-    has_reply = await check_thread_has_reply(access_token, thread_id)
+    has_reply = check_thread_has_reply(access_token, thread_id)
     return {"thread_id": thread_id, "has_reply": has_reply}
 
 @app.get("/health")

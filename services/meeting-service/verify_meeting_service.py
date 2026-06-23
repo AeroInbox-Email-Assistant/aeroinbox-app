@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import List, Optional
 
 # Adjust Python path to import from services/meeting-service
-sys.path.append(r"c:\Users\ASUS\OneDrive\Desktop\Ai_Assistan_Email\services\meeting-service")
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import main
 from repository import MeetingRepository, Meeting, Participant
@@ -400,7 +400,7 @@ class TestMeetingServiceLogic(unittest.TestCase):
 
         url, plat = main.extract_meeting_url(teams_body)
         self.assertEqual(plat, "Microsoft Teams")
-        self.assertTrue("meetup-join" in url)
+        self.assertIn("meetup-join", url)
 
         url, plat = main.extract_meeting_url(no_meet_body)
         self.assertIsNone(url)

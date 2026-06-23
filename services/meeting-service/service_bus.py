@@ -8,6 +8,8 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+_SIMULATION_TASKS = set()
+
 # Try to import azure.servicebus
 try:
     from azure.servicebus.aio import ServiceBusClient
@@ -42,11 +44,13 @@ async def schedule_meeting_reminder(meeting_id: int, user_id: str, title: str, s
                     await sender.schedule_messages(message, reminder_utc)
                     logger.info(f"Scheduled Service Bus message for meeting {meeting_id} at {reminder_utc}")
                     return
-        except Exception as e:
-            logger.error(f"Failed to schedule Service Bus message: {str(e)}. Falling back to local simulation.")
+        except Exception:
+            logger.exception("Failed to schedule Service Bus message. Falling back to local simulation.")
     
     # Local Simulation Fallback (in-memory background task)
-    asyncio.create_task(simulate_local_reminder(meeting_id, reminder_time))
+    task = asyncio.create_task(simulate_local_reminder(meeting_id, reminder_time))
+    _SIMULATION_TASKS.add(task)
+    task.add_done_callback(_SIMULATION_TASKS.discard)
 
 async def simulate_local_reminder(meeting_id: int, reminder_time: datetime.datetime):
     """
@@ -78,5 +82,5 @@ async def trigger_local_reminder(meeting_id: int):
         try:
             response = await client.post(url, timeout=10.0)
             logger.info(f"Local simulation: Triggered reminder for meeting {meeting_id}, status code: {response.status_code}")
-        except Exception as e:
-            logger.error(f"Local simulation: Failed to self-trigger reminder for meeting {meeting_id}: {str(e)}")
+        except Exception:
+            logger.exception(f"Local simulation: Failed to self-trigger reminder for meeting {meeting_id}")

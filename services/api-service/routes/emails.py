@@ -156,79 +156,124 @@ async def get_unread_emails_legacy(
     )
     return result["emails"]
 
+async def _process_single_account(
+    acc: AccountPayload,
+    include_read: bool,
+    refreshed_tokens: dict,
+    session_id: Optional[str]
+) -> List[dict]:
+    access_token = acc.access_token
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            fetch_body = {
+                "accounts": [{"email": acc.email, "access_token": access_token}],
+                "include_read": include_read,
+                "max_results": 15
+            }
+            response = await client.post(
+                f"{settings.GMAIL_SERVICE_URL}/fetch",
+                json=fetch_body,
+                timeout=30.0
+            )
+            
+            # Check for unauthorized (token expired)
+            if response.status_code == 401 and acc.refresh_token:
+                logger.info(f"Access token expired for {acc.email}. Refreshing...")
+                new_token = await refresh_google_token(acc.refresh_token)
+                if new_token:
+                    refreshed_tokens[acc.email] = new_token
+                    # Update token in active local copy
+                    access_token = new_token
+                    
+                    # Update in Redis session
+                    if session_id:
+                        try:
+                            redis_client = await redis_manager.get_client()
+                            session_key = f"session:{session_id}"
+                            session_data = await redis_client.get(session_key)
+                            if session_data:
+                                sess_accs = json.loads(session_data)
+                                for sa in sess_accs:
+                                    if sa.get("email") == acc.email:
+                                        sa["access_token"] = new_token
+                                await redis_client.setex(session_key, 3600, json.dumps(sess_accs))
+                                logger.info(f"Refreshed token updated in Redis session for {acc.email}")
+                        except Exception:
+                            logger.exception("Failed to update session token in Redis")
+
+                    # Retry the request with the new access token
+                    fetch_body["accounts"][0]["access_token"] = access_token
+                    response = await client.post(
+                        f"{settings.GMAIL_SERVICE_URL}/fetch",
+                        json=fetch_body,
+                        timeout=30.0
+                    )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Gmail Service returned {response.status_code} for {acc.email}: {response.text}")
+                return []
+        except Exception:
+            logger.exception(f"Orchestrator error fetching emails for {acc.email}")
+            return []
+
+
 async def _fetch_account_emails(
     accounts: List[AccountPayload],
     include_read: bool,
     refreshed_tokens: dict,
     session_id: Optional[str]
 ) -> List[dict]:
-    all_emails = []
-    
-    async def process_account(acc: AccountPayload):
-        access_token = acc.access_token
-        
-        async with httpx.AsyncClient() as client:
-            try:
-                fetch_body = {
-                    "accounts": [{"email": acc.email, "access_token": access_token}],
-                    "include_read": include_read,
-                    "max_results": 15
-                }
-                response = await client.post(
-                    f"{settings.GMAIL_SERVICE_URL}/fetch",
-                    json=fetch_body,
-                    timeout=30.0
-                )
-                
-                # Check for unauthorized (token expired)
-                if response.status_code == 401 and acc.refresh_token:
-                    logger.info(f"Access token expired for {acc.email}. Refreshing...")
-                    new_token = await refresh_google_token(acc.refresh_token)
-                    if new_token:
-                        refreshed_tokens[acc.email] = new_token
-                        # Update token in active local copy
-                        access_token = new_token
-                        
-                        # Update in Redis session
-                        if session_id:
-                            try:
-                                redis_client = await redis_manager.get_client()
-                                session_key = f"session:{session_id}"
-                                session_data = await redis_client.get(session_key)
-                                if session_data:
-                                    sess_accs = json.loads(session_data)
-                                    for sa in sess_accs:
-                                        if sa.get("email") == acc.email:
-                                            sa["access_token"] = new_token
-                                    await redis_client.setex(session_key, 3600, json.dumps(sess_accs))
-                                    logger.info(f"Refreshed token updated in Redis session for {acc.email}")
-                            except Exception:
-                                logger.exception("Failed to update session token in Redis")
-
-                        # Retry the request with the new access token
-                        fetch_body["accounts"][0]["access_token"] = access_token
-                        response = await client.post(
-                            f"{settings.GMAIL_SERVICE_URL}/fetch",
-                            json=fetch_body,
-                            timeout=30.0
-                        )
-                
-                if response.status_code == 200:
-                    return response.json()
-                else:
-                    logger.error(f"Gmail Service returned {response.status_code} for {acc.email}: {response.text}")
-                    return []
-            except Exception:
-                logger.exception(f"Orchestrator error fetching emails for {acc.email}")
-                return []
-                  
-    tasks = [process_account(acc) for acc in accounts]
+    tasks = [_process_single_account(acc, include_read, refreshed_tokens, session_id) for acc in accounts]
     accounts_emails = await asyncio.gather(*tasks)
     
+    all_emails = []
     for emails_list in accounts_emails:
         all_emails.extend(emails_list)
         
     return all_emails
+
+
+def _enrich_single_email_from_row(email: dict, db_row: dict) -> None:
+    matched_rules = db_row["matched_rules"]
+    if isinstance(matched_rules, str):
+        try:
+            matched_rules = json.loads(matched_rules)
+        except Exception:
+            matched_rules = []
+            
+    email["rule_analysis"] = {
+        "rule_score": db_row["rule_score"],
+        "matched_rules": matched_rules
+    }
+    
+    if db_row["ai_priority"] is not None:
+        action_items = db_row.get("action_items")
+        if isinstance(action_items, str):
+            try:
+                action_items = json.loads(action_items)
+            except Exception:
+                action_items = []
+        elif not isinstance(action_items, list):
+            action_items = []
+        email["ai_analysis"] = {
+            "summary": db_row["ai_summary"],
+            "priority": db_row["ai_priority"],
+            "reply": db_row["ai_reply"],
+            "is_spam_false_positive": db_row["is_spam_false_positive"],
+            "spam_analysis_reason": db_row["spam_analysis_reason"],
+            "is_meeting_request": db_row["is_meeting_request"],
+            "has_deadline": db_row["has_deadline"],
+            "deadline_date": db_row["deadline_date"],
+            "action_items": action_items
+        }
+    else:
+        email["ai_analysis"] = None
+        
+    email["final_priority"] = db_row["final_priority"]
+    email["final_score"] = db_row["final_score"]
 
 
 async def _enrich_cached_emails(unread_emails: List[dict]) -> tuple[List[dict], List[dict]]:
@@ -237,7 +282,7 @@ async def _enrich_cached_emails(unread_emails: List[dict]) -> tuple[List[dict], 
     
     if not unread_emails:
         return cached_unread_emails, uncached_unread_emails
-
+ 
     from database import db as pg_db
     email_ids = [e.get("id") for e in unread_emails]
     try:
@@ -251,43 +296,7 @@ async def _enrich_cached_emails(unread_emails: List[dict]) -> tuple[List[dict], 
             email_id = email.get("id")
             if email_id in cache_map:
                 db_row = cache_map[email_id]
-                matched_rules = db_row["matched_rules"]
-                if isinstance(matched_rules, str):
-                    try:
-                        matched_rules = json.loads(matched_rules)
-                    except Exception:
-                        matched_rules = []
-                        
-                email["rule_analysis"] = {
-                    "rule_score": db_row["rule_score"],
-                    "matched_rules": matched_rules
-                }
-                
-                if db_row["ai_priority"] is not None:
-                    action_items = db_row.get("action_items")
-                    if isinstance(action_items, str):
-                        try:
-                            action_items = json.loads(action_items)
-                        except Exception:
-                            action_items = []
-                    elif not isinstance(action_items, list):
-                        action_items = []
-                    email["ai_analysis"] = {
-                        "summary": db_row["ai_summary"],
-                        "priority": db_row["ai_priority"],
-                        "reply": db_row["ai_reply"],
-                        "is_spam_false_positive": db_row["is_spam_false_positive"],
-                        "spam_analysis_reason": db_row["spam_analysis_reason"],
-                        "is_meeting_request": db_row["is_meeting_request"],
-                        "has_deadline": db_row["has_deadline"],
-                        "deadline_date": db_row["deadline_date"],
-                        "action_items": action_items
-                    }
-                else:
-                    email["ai_analysis"] = None
-                    
-                email["final_priority"] = db_row["final_priority"]
-                email["final_score"] = db_row["final_score"]
+                _enrich_single_email_from_row(email, db_row)
                 cached_unread_emails.append(email)
             else:
                 uncached_unread_emails.append(email)
@@ -296,6 +305,34 @@ async def _enrich_cached_emails(unread_emails: List[dict]) -> tuple[List[dict], 
         uncached_unread_emails = unread_emails
         
     return cached_unread_emails, uncached_unread_emails
+
+
+def _calculate_email_score(email: dict) -> int:
+    ai_score = 0
+    if email["ai_analysis"]:
+        ai_priority = email["ai_analysis"].get("priority", "Low")
+        if ai_priority in ("High", "Critical"):
+            ai_score = 30
+        elif ai_priority == "Medium":
+            ai_score = 15
+            
+        if email["ai_analysis"].get("is_meeting_request"):
+            ai_score += 10
+        if email["ai_analysis"].get("has_deadline"):
+            ai_score += 10
+            
+    rule_score = email["rule_analysis"].get("rule_score", 0)
+    preference_score = 0
+    
+    # Spam folder penalty/adjustment
+    if email.get("folder") == "SPAM":
+        if email["ai_analysis"] and email["ai_analysis"].get("is_spam_false_positive"):
+            preference_score += 10
+        else:
+            ai_score = 0
+            rule_score = 0
+            
+    return ai_score + rule_score + preference_score
 
 
 def _compute_hybrid_priority(email: dict, r_info: dict, ai_info: Optional[dict]) -> None:
@@ -319,33 +356,7 @@ def _compute_hybrid_priority(email: dict, r_info: dict, ai_info: Optional[dict])
     else:
         email["ai_analysis"] = None
         
-    # Calculate Scores:
-    # AI Score: Critical/High=30, Medium=15, Low=0. Boost meeting (+10), deadline (+10)
-    ai_score = 0
-    if email["ai_analysis"]:
-        ai_priority = email["ai_analysis"].get("priority", "Low")
-        if ai_priority == "High" or ai_priority == "Critical":
-            ai_score = 30
-        elif ai_priority == "Medium":
-            ai_score = 15
-            
-        if email["ai_analysis"].get("is_meeting_request"):
-            ai_score += 10
-        if email["ai_analysis"].get("has_deadline"):
-            ai_score += 10
-            
-    rule_score = email["rule_analysis"].get("rule_score", 0)
-    preference_score = 0
-    
-    # Spam folder penalty/adjustment
-    if email.get("folder") == "SPAM":
-        if email["ai_analysis"] and email["ai_analysis"].get("is_spam_false_positive"):
-            preference_score += 10
-        else:
-            ai_score = 0
-            rule_score = 0
-            
-    final_score = ai_score + rule_score + preference_score
+    final_score = _calculate_email_score(email)
     
     if final_score >= 70:
         email["final_priority"] = "Critical"
@@ -463,6 +474,68 @@ async def fetch_and_prioritize_emails(
     return GetEmailsResponse(emails=sorted_emails, refreshed_tokens=refreshed_tokens)
 
 @router.get("/search", response_model=GetEmailsResponse, responses=_RESPONSES_COMMON)
+async def _search_single_account(
+    acc: AccountPayload,
+    q: str,
+    refreshed_tokens: dict,
+    session_id: Optional[str]
+) -> List[dict]:
+    access_token = acc.access_token
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            search_body = {
+                "accounts": [{"email": acc.email, "access_token": access_token}],
+                "q": q,
+                "max_results": 15
+            }
+            response = await client.post(
+                f"{settings.GMAIL_SERVICE_URL}/search",
+                json=search_body,
+                timeout=30.0
+            )
+            
+            # Check for unauthorized (token expired)
+            if response.status_code == 401 and acc.refresh_token:
+                logger.info(f"Access token expired for {acc.email} during search. Refreshing...")
+                new_token = await refresh_google_token(acc.refresh_token)
+                if new_token:
+                    refreshed_tokens[acc.email] = new_token
+                    access_token = new_token
+                    
+                    # Update in Redis session
+                    if session_id:
+                        try:
+                            redis_client = await redis_manager.get_client()
+                            session_key = f"session:{session_id}"
+                            session_data = await redis_client.get(session_key)
+                            if session_data:
+                                sess_accs = json.loads(session_data)
+                                for sa in sess_accs:
+                                    if sa.get("email") == acc.email:
+                                        sa["access_token"] = new_token
+                                await redis_client.setex(session_key, 3600, json.dumps(sess_accs))
+                        except Exception:
+                            logger.exception("Failed to update session token in Redis")
+
+                    # Retry the request with the new access token
+                    search_body["accounts"][0]["access_token"] = access_token
+                    response = await client.post(
+                        f"{settings.GMAIL_SERVICE_URL}/search",
+                        json=search_body,
+                        timeout=30.0
+                    )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Gmail Service returned {response.status_code} during search for {acc.email}: {response.text}")
+                return []
+        except Exception:
+            logger.exception(f"Orchestrator error searching emails for {acc.email}")
+            return []
+
+
 async def search_emails(
     q: str = Query(..., description="Gmail search query string"),
     accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None,
@@ -477,63 +550,7 @@ async def search_emails(
     all_emails = []
     
     # 1. Search emails for each account in parallel
-    async def process_account_search(acc: AccountPayload):
-        access_token = acc.access_token
-        
-        async with httpx.AsyncClient() as client:
-            try:
-                search_body = {
-                    "accounts": [{"email": acc.email, "access_token": access_token}],
-                    "q": q,
-                    "max_results": 15
-                }
-                response = await client.post(
-                    f"{settings.GMAIL_SERVICE_URL}/search",
-                    json=search_body,
-                    timeout=30.0
-                )
-                
-                # Check for unauthorized (token expired)
-                if response.status_code == 401 and acc.refresh_token:
-                    logger.info(f"Access token expired for {acc.email} during search. Refreshing...")
-                    new_token = await refresh_google_token(acc.refresh_token)
-                    if new_token:
-                        refreshed_tokens[acc.email] = new_token
-                        access_token = new_token
-                        
-                        # Update in Redis session
-                        if session_id:
-                            try:
-                                redis_client = await redis_manager.get_client()
-                                session_key = f"session:{session_id}"
-                                session_data = await redis_client.get(session_key)
-                                if session_data:
-                                    sess_accs = json.loads(session_data)
-                                    for sa in sess_accs:
-                                        if sa.get("email") == acc.email:
-                                            sa["access_token"] = new_token
-                                    await redis_client.setex(session_key, 3600, json.dumps(sess_accs))
-                            except Exception:
-                                logger.exception("Failed to update session token in Redis")
-
-                        # Retry the request with the new access token
-                        search_body["accounts"][0]["access_token"] = access_token
-                        response = await client.post(
-                            f"{settings.GMAIL_SERVICE_URL}/search",
-                            json=search_body,
-                            timeout=30.0
-                        )
-                
-                if response.status_code == 200:
-                    return response.json()
-                else:
-                    logger.error(f"Gmail Service returned {response.status_code} during search for {acc.email}: {response.text}")
-                    return []
-            except Exception:
-                logger.exception(f"Orchestrator error searching emails for {acc.email}")
-                return []
-                  
-    tasks = [process_account_search(acc) for acc in accounts]
+    tasks = [_search_single_account(acc, q, refreshed_tokens, session_id) for acc in accounts]
     accounts_emails = await asyncio.gather(*tasks)
     
     # Flatten emails
@@ -560,34 +577,7 @@ async def search_emails(
         email_id = email.get("id")
         if email_id in cache_map:
             db_row = cache_map[email_id]
-            matched_rules = db_row["matched_rules"]
-            if isinstance(matched_rules, str):
-                try:
-                    matched_rules = json.loads(matched_rules)
-                except Exception:
-                    matched_rules = []
-                    
-            email["rule_analysis"] = {
-                "rule_score": db_row["rule_score"],
-                "matched_rules": matched_rules
-            }
-            
-            if db_row["ai_priority"] is not None:
-                email["ai_analysis"] = {
-                    "summary": db_row["ai_summary"],
-                    "priority": db_row["ai_priority"],
-                    "reply": db_row["ai_reply"],
-                    "is_spam_false_positive": db_row["is_spam_false_positive"],
-                    "spam_analysis_reason": db_row["spam_analysis_reason"],
-                    "is_meeting_request": db_row["is_meeting_request"],
-                    "has_deadline": db_row["has_deadline"],
-                    "deadline_date": db_row["deadline_date"]
-                }
-            else:
-                email["ai_analysis"] = None
-                
-            email["final_priority"] = db_row["final_priority"]
-            email["final_score"] = db_row["final_score"]
+            _enrich_single_email_from_row(email, db_row)
         else:
             email["rule_analysis"] = None
             email["ai_analysis"] = None
@@ -633,6 +623,23 @@ async def _create_action_item_tasks(
                     logger.exception("Failed to insert AI task")
 
 
+async def _check_thread_reply(client: httpx.AsyncClient, email: dict, token: str) -> bool:
+    thread_id = email.get("thread_id")
+    if not thread_id:
+        return False
+    try:
+        res = await client.get(
+            f"{settings.GMAIL_SERVICE_URL}/threads/{thread_id}/has-reply",
+            params={"access_token": token},
+            timeout=10.0
+        )
+        if res.status_code == 200:
+            return res.json().get("has_reply", False)
+    except Exception:
+        logger.exception(f"Failed to check reply status for thread {thread_id}")
+    return False
+
+
 async def _create_no_reply_tasks(
     pg_db,
     client: httpx.AsyncClient,
@@ -642,32 +649,16 @@ async def _create_no_reply_tasks(
 ) -> None:
     if not thread_emails:
         return
-
-    async def check_reply_task(email: dict, token: str):
-        thread_id = email.get("thread_id")
-        if not thread_id:
-            return False
-        try:
-            res = await client.get(
-                f"{settings.GMAIL_SERVICE_URL}/threads/{thread_id}/has-reply",
-                params={"access_token": token},
-                timeout=10.0
-            )
-            if res.status_code == 200:
-                return res.json().get("has_reply", False)
-        except Exception:
-            logger.exception(f"Failed to check reply status for thread {thread_id}")
-        return False
-
+ 
     thread_checks = []
     valid_thread_emails = []
     for email in thread_emails:
         user_id = email.get("account_email", "unknown")
         token = next((acc.access_token for acc in accounts if acc.email == user_id), None)
         if token:
-            thread_checks.append(check_reply_task(email, token))
+            thread_checks.append(_check_thread_reply(client, email, token))
             valid_thread_emails.append(email)
-
+ 
     if thread_checks:
         results = await asyncio.gather(*thread_checks)
         for email, has_reply in zip(valid_thread_emails, results):
@@ -742,6 +733,32 @@ async def generate_email_tasks_in_background(emails: List[dict], accounts: List[
 
         await _create_no_reply_tasks(pg_db, client, thread_emails, accounts, existing_tasks)
 
+async def _execute_gmail_action_on_account(
+    acc: AccountPayload,
+    id: str,
+    action_type: str
+) -> dict:
+    async with httpx.AsyncClient() as client:
+        body = {"access_token": acc.access_token}
+        if action_type == "read":
+            body["remove_labels"] = ["UNREAD"]
+        elif action_type == "unread":
+            body["add_labels"] = ["UNREAD"]
+        elif action_type == "move-to-inbox":
+            body["add_labels"] = ["INBOX"]
+            body["remove_labels"] = ["SPAM"]
+        
+        response = await client.post(
+            f"{settings.GMAIL_SERVICE_URL}/emails/{id}/labels",
+            json=body,
+            timeout=15.0
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+
+
 async def perform_gmail_action(
     id: str,
     action_type: str, # "read", "unread", "move-to-inbox"
@@ -750,37 +767,21 @@ async def perform_gmail_action(
 ):
     if not id or not id.isalnum():
         raise HTTPException(status_code=400, detail="Invalid email ID format.")
-
+ 
     candidate_accounts = accounts
     if target_email:
         candidate_accounts = [acc for acc in accounts if acc.email == target_email]
         if not candidate_accounts:
             raise HTTPException(status_code=403, detail="Requested email account not in session.")
-
+ 
     last_error = None
     for acc in candidate_accounts:
-        async with httpx.AsyncClient() as client:
-            try:
-                body = {"access_token": acc.access_token}
-                if action_type == "read":
-                    body["remove_labels"] = ["UNREAD"]
-                elif action_type == "unread":
-                    body["add_labels"] = ["UNREAD"]
-                elif action_type == "move-to-inbox":
-                    body["add_labels"] = ["INBOX"]
-                    body["remove_labels"] = ["SPAM"]
-                
-                response = await client.post(
-                    f"{settings.GMAIL_SERVICE_URL}/emails/{id}/labels",
-                    json=body,
-                    timeout=15.0
-                )
-                if response.status_code == 200:
-                    return response.json()
-                else:
-                    last_error = HTTPException(status_code=response.status_code, detail=response.text)
-            except httpx.HTTPError as e:
-                last_error = HTTPException(status_code=502, detail=f"Failed to contact Gmail service: {str(e)}")
+        try:
+            return await _execute_gmail_action_on_account(acc, id, action_type)
+        except HTTPException as e:
+            last_error = e
+        except httpx.HTTPError as e:
+            last_error = HTTPException(status_code=502, detail=f"Failed to contact Gmail service: {str(e)}")
     
     if last_error:
         raise last_error

@@ -19,14 +19,17 @@ from config import settings
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Duplicated rule insertion SQL constant
+_INSERT_RULE_QUERY = "INSERT INTO user_rules (user_id, rule_type, rule_value, score) VALUES ($1, $2, $3, $4)"
+
 # Configure Azure Monitor OpenTelemetry if connection string is provided
 if settings.APPLICATIONINSIGHTS_CONNECTION_STRING:
     try:
         from azure.monitor.opentelemetry import configure_azure_monitor
         configure_azure_monitor(connection_string=settings.APPLICATIONINSIGHTS_CONNECTION_STRING)
         logger.info("Azure Monitor OpenTelemetry configured successfully for rule-engine-service.")
-    except Exception as e:
-        logger.error(f"Failed to configure Azure Monitor OpenTelemetry: {str(e)}")
+    except Exception:
+        logger.exception("Failed to configure Azure Monitor OpenTelemetry")
 
 # Database Pool Manager
 class PostgresPoolManager:
@@ -34,22 +37,22 @@ class PostgresPoolManager:
         self.pool = None
         self.token_expiry = None
 
-    async def get_password(self) -> str:
+    def get_password(self) -> str:
         if settings.DB_AUTH_METHOD == "entra":
             try:
                 credential = DefaultAzureCredential()
                 token_obj = credential.get_token("https://ossrdbms-aad.database.windows.net/.default")
                 self.token_expiry = datetime.datetime.fromtimestamp(token_obj.expires_on, datetime.timezone.utc)
-                logger.info(f"Retrieved Entra ID token, expires at: {self.token_expiry}")
+                logger.info("Retrieved Entra ID token, expires at: %s", self.token_expiry)
                 return token_obj.token
-            except Exception as e:
-                logger.error(f"Failed to fetch Entra ID token: {str(e)}")
+            except Exception:
+                logger.exception("Failed to fetch Entra ID token")
                 return settings.DB_PASSWORD
         else:
             return settings.DB_PASSWORD
 
     async def initialize_pool(self):
-        password = await self.get_password()
+        password = self.get_password()
         ssl_arg = "require" if settings.DB_SSL.lower() in ("true", "1", "yes") else None
         
         self.pool = await asyncpg.create_pool(
@@ -165,7 +168,9 @@ class EmailEvaluationResult(BaseModel):
     matched_rules: List[str]
 
 async def seed_default_rules(user_id: str):
-    logger.info(f"Seeding default rules for user: {user_id}")
+    # Sanitize user controlled logging values to prevent log injection (CWE-117)
+    safe_user_id = user_id.replace('\r', '').replace('\n', '')
+    logger.info("Seeding default rules for user: %s", safe_user_id)
     defaults = [
         # vip_senders
         ("vip_sender", "ceo", 30),
@@ -193,17 +198,9 @@ async def seed_default_rules(user_id: str):
         ("preference_boost", "spam_boost", 0)
     ]
     for rtype, rval, score in defaults:
-        await db.execute(
-            "INSERT INTO user_rules (user_id, rule_type, rule_value, score) VALUES ($1, $2, $3, $4)",
-            user_id, rtype, rval, score
-        )
+        await db.execute(_INSERT_RULE_QUERY, user_id, rtype, rval, score)
 
-async def get_rules_for_user(user_id: str) -> RulesConfig:
-    rows = await db.fetch("SELECT rule_type, rule_value, score FROM user_rules WHERE user_id = $1 AND active = TRUE", user_id)
-    if not rows:
-        await seed_default_rules(user_id)
-        rows = await db.fetch("SELECT rule_type, rule_value, score FROM user_rules WHERE user_id = $1 AND active = TRUE", user_id)
-
+def _populate_rules_config(rows) -> tuple:
     vip_senders = []
     domains = []
     keywords = []
@@ -238,6 +235,16 @@ async def get_rules_for_user(user_id: str) -> RulesConfig:
             elif rval == "spam_boost":
                 preference_boosts.spam_boost = score
 
+    return vip_senders, domains, keywords, custom_senders, custom_keywords, custom_categories, preference_boosts
+
+async def get_rules_for_user(user_id: str) -> RulesConfig:
+    rows = await db.fetch("SELECT rule_type, rule_value, score FROM user_rules WHERE user_id = $1 AND active = TRUE", user_id)
+    if not rows:
+        await seed_default_rules(user_id)
+        rows = await db.fetch("SELECT rule_type, rule_value, score FROM user_rules WHERE user_id = $1 AND active = TRUE", user_id)
+
+    vip_senders, domains, keywords, custom_senders, custom_keywords, custom_categories, preference_boosts = _populate_rules_config(rows)
+
     return RulesConfig(
         vip_senders=vip_senders,
         domains=domains,
@@ -253,19 +260,19 @@ async def save_rules_for_user(user_id: str, config: RulesConfig):
     
     # Insert new configuration
     for val in config.vip_senders:
-        await db.execute("INSERT INTO user_rules (user_id, rule_type, rule_value, score) VALUES ($1, $2, $3, $4)", user_id, "vip_sender", val, 30)
+        await db.execute(_INSERT_RULE_QUERY, user_id, "vip_sender", val, 30)
     for val in config.domains:
-        await db.execute("INSERT INTO user_rules (user_id, rule_type, rule_value, score) VALUES ($1, $2, $3, $4)", user_id, "domain", val, 20)
+        await db.execute(_INSERT_RULE_QUERY, user_id, "domain", val, 20)
     for val in config.keywords:
-        await db.execute("INSERT INTO user_rules (user_id, rule_type, rule_value, score) VALUES ($1, $2, $3, $4)", user_id, "keyword", val, 10)
+        await db.execute(_INSERT_RULE_QUERY, user_id, "keyword", val, 10)
     for val in config.custom_senders:
-        await db.execute("INSERT INTO user_rules (user_id, rule_type, rule_value, score) VALUES ($1, $2, $3, $4)", user_id, "custom_sender", val, 35)
+        await db.execute(_INSERT_RULE_QUERY, user_id, "custom_sender", val, 35)
     for val in config.custom_keywords:
-        await db.execute("INSERT INTO user_rules (user_id, rule_type, rule_value, score) VALUES ($1, $2, $3, $4)", user_id, "custom_keyword", val, 15)
+        await db.execute(_INSERT_RULE_QUERY, user_id, "custom_keyword", val, 15)
     if config.custom_categories:
-        await db.execute("INSERT INTO user_rules (user_id, rule_type, rule_value, score) VALUES ($1, $2, $3, $4)", user_id, "custom_categories", json.dumps(config.custom_categories), 0)
-    await db.execute("INSERT INTO user_rules (user_id, rule_type, rule_value, score) VALUES ($1, $2, $3, $4)", user_id, "preference_boost", "inbox_boost", config.preference_boosts.inbox_boost)
-    await db.execute("INSERT INTO user_rules (user_id, rule_type, rule_value, score) VALUES ($1, $2, $3, $4)", user_id, "preference_boost", "spam_boost", config.preference_boosts.spam_boost)
+        await db.execute(_INSERT_RULE_QUERY, user_id, "custom_categories", json.dumps(config.custom_categories), 0)
+    await db.execute(_INSERT_RULE_QUERY, user_id, "preference_boost", "inbox_boost", config.preference_boosts.inbox_boost)
+    await db.execute(_INSERT_RULE_QUERY, user_id, "preference_boost", "spam_boost", config.preference_boosts.spam_boost)
 
 @app.get("/rules", response_model=RulesConfig)
 async def get_rules(user_id: str = "default"):
@@ -282,6 +289,82 @@ async def update_rules(config: RulesConfig, user_id: str = "default"):
     await save_rules_for_user(user_id, config)
     return config
 
+def _evaluate_single_email(email: EmailModel, rules: RulesConfig) -> EmailEvaluationResult:
+    vip_senders = [v.lower() for v in rules.vip_senders]
+    domains = [d.lower().strip("@") for d in rules.domains]
+    keywords = [k.lower() for k in rules.keywords]
+    custom_senders = [cs.lower() for cs in rules.custom_senders]
+    custom_keywords = [ck.lower() for ck in rules.custom_keywords]
+    inbox_boost = rules.preference_boosts.inbox_boost
+    spam_boost = rules.preference_boosts.spam_boost
+
+    rule_score = 0
+    matched_rules = []
+    sender_lower = email.sender.lower()
+    subject_lower = email.subject.lower()
+    snippet_lower = email.snippet.lower()
+    body_lower = email.body.lower()
+
+    # 1. VIP Senders
+    vip_matched = False
+    for vip in vip_senders:
+        if vip in sender_lower:
+            rule_score += 30
+            matched_rules.append(f"VIP Sender Title: {vip}")
+            vip_matched = True
+            break
+
+    # 2. Custom User Senders
+    if not vip_matched:
+        for cs in custom_senders:
+            if cs in sender_lower:
+                rule_score += 35
+                matched_rules.append(f"Custom VIP Sender: {cs}")
+                break
+
+    # 3. Domain Rules
+    email_match = re.search(r'[\w\.-]+@([\w\.-]+)', sender_lower)
+    if email_match:
+        sender_domain = email_match.group(1)
+        for d in domains:
+            if d in sender_domain:
+                rule_score += 20
+                matched_rules.append(f"Important Domain: @{d}")
+                break
+
+    # 4. Standard Keywords
+    kw_matched_count = 0
+    for kw in keywords:
+        if kw in subject_lower or kw in snippet_lower:
+            rule_score += 10
+            matched_rules.append(f"Urgent Keyword: {kw}")
+            kw_matched_count += 1
+            if kw_matched_count >= 3:
+                break
+
+    # 5. Custom User Keywords
+    custom_kw_matched_count = 0
+    for ck in custom_keywords:
+        if ck in subject_lower or ck in body_lower:
+            rule_score += 15
+            matched_rules.append(f"Custom Keyword Match: {ck}")
+            custom_kw_matched_count += 1
+            if custom_kw_matched_count >= 2:
+                break
+
+    # 6. Folder boosts
+    if email.folder.upper() == "INBOX" and inbox_boost != 0:
+        rule_score += inbox_boost
+        matched_rules.append(f"Folder Preference Boost: Inbox ({inbox_boost})")
+    elif email.folder.upper() == "SPAM" and spam_boost != 0:
+        rule_score += spam_boost
+        matched_rules.append(f"Folder Preference Boost: Spam ({spam_boost})")
+
+    return EmailEvaluationResult(
+        rule_score=rule_score,
+        matched_rules=matched_rules
+    )
+
 @app.post("/evaluate/bulk", response_model=Dict[str, EmailEvaluationResult])
 async def evaluate_emails_bulk(emails: List[EmailModel]):
     """
@@ -296,82 +379,7 @@ async def evaluate_emails_bulk(emails: List[EmailModel]):
             user_rules_cache[user_id] = await get_rules_for_user(user_id)
 
         rules = user_rules_cache[user_id]
-        vip_senders = [v.lower() for v in rules.vip_senders]
-        domains = [d.lower().strip("@") for d in rules.domains]
-        keywords = [k.lower() for k in rules.keywords]
-        custom_senders = [cs.lower() for cs in rules.custom_senders]
-        custom_keywords = [ck.lower() for ck in rules.custom_keywords]
-        inbox_boost = rules.preference_boosts.inbox_boost
-        spam_boost = rules.preference_boosts.spam_boost
-
-        rule_score = 0
-        matched_rules = []
-        sender_lower = email.sender.lower()
-        subject_lower = email.subject.lower()
-        snippet_lower = email.snippet.lower()
-        body_lower = email.body.lower()
-
-        # 1. VIP Senders
-        vip_matched = False
-        for vip in vip_senders:
-            if vip in sender_lower:
-                rule_score += 30
-                matched_rules.append(f"VIP Sender Title: {vip}")
-                vip_matched = True
-                break
-
-        # 2. Custom User Senders
-        if not vip_matched:
-            for cs in custom_senders:
-                if cs in sender_lower:
-                    rule_score += 35
-                    matched_rules.append(f"Custom VIP Sender: {cs}")
-                    break
-
-        # 3. Domain Rules
-        domain_matched = False
-        email_match = re.search(r'[\w\.-]+@([\w\.-]+)', sender_lower)
-        if email_match:
-            sender_domain = email_match.group(1)
-            for d in domains:
-                if d in sender_domain:
-                    rule_score += 20
-                    matched_rules.append(f"Important Domain: @{d}")
-                    domain_matched = True
-                    break
-
-        # 4. Standard Keywords
-        kw_matched_count = 0
-        for kw in keywords:
-            if kw in subject_lower or kw in snippet_lower:
-                rule_score += 10
-                matched_rules.append(f"Urgent Keyword: {kw}")
-                kw_matched_count += 1
-                if kw_matched_count >= 3:
-                    break
-
-        # 5. Custom User Keywords
-        custom_kw_matched_count = 0
-        for ck in custom_keywords:
-            if ck in subject_lower or ck in body_lower:
-                rule_score += 15
-                matched_rules.append(f"Custom Keyword Match: {ck}")
-                custom_kw_matched_count += 1
-                if custom_kw_matched_count >= 2:
-                    break
-
-        # 6. Folder boosts
-        if email.folder.upper() == "INBOX" and inbox_boost != 0:
-            rule_score += inbox_boost
-            matched_rules.append(f"Folder Preference Boost: Inbox ({inbox_boost})")
-        elif email.folder.upper() == "SPAM" and spam_boost != 0:
-            rule_score += spam_boost
-            matched_rules.append(f"Folder Preference Boost: Spam ({spam_boost})")
-
-        results[email.id] = EmailEvaluationResult(
-            rule_score=rule_score,
-            matched_rules=matched_rules
-        )
+        results[email.id] = _evaluate_single_email(email, rules)
 
     return results
 
@@ -419,15 +427,15 @@ async def ready(response: Response):
             "status": "ready",
             "service": "rule-engine"
         }
-    except Exception as e:
-        logger.error(f"Readiness check failed - PostgreSQL connection error: {str(e)}")
+    except Exception:
+        logger.exception("Readiness check failed - PostgreSQL connection error")
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
             "status": "not ready",
-            "service": "rule-engine",
-            "error": str(e)
+            "service": "rule-engine"
         }
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+    # Local dev binds exclusively to 127.0.0.1 loopback for network separation
+    uvicorn.run("main:app", host="127.0.0.1", port=8000)
