@@ -239,10 +239,6 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }}
-            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
-            -Dsonar.sources=services,frontend/src
-            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/build/**,**/tests/**,**/venv/**
             -Dsonar.qualitygate.wait=true
 
       - name: Setup Python for Snyk
