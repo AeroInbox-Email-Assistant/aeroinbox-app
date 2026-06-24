@@ -181,10 +181,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Python Linting Tools
+      - name: Install Python Linting and Testing Tools
         if: needs.detect-changes.outputs.has-python-changes == 'true'
         run: |
-          pip install flake8
+          pip install flake8 coverage
 
       - name: Lint Python Code (Syntax Checks)
         if: needs.detect-changes.outputs.has-python-changes == 'true'
@@ -196,11 +196,20 @@ jobs:
         run: |
           pip install -r services/meeting-service/requirements.txt
 
-      - name: Run Python Unit Tests
+      - name: Run Python Unit Tests with Coverage
         if: needs.detect-changes.outputs.has-python-changes == 'true'
         env:
           PYTHONPATH: services/meeting-service
-        run: python -m unittest services/meeting-service/verify_meeting_service.py
+        run: |
+          coverage run --source=services -m unittest services/meeting-service/verify_meeting_service.py
+          coverage xml -o coverage.xml
+
+      - name: Upload Python Coverage Report
+        if: needs.detect-changes.outputs.has-python-changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage
+          path: coverage.xml
 
       - name: Setup Node.js
         if: needs.detect-changes.outputs.has-frontend-changes == 'true'
@@ -230,6 +239,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Download Python Coverage Report
+        if: needs.detect-changes.outputs.has-python-changes == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: python-coverage
+          path: coverage-reports
 
       # Run the SonarCloud analysis and wait for the Quality Gate status
       - name: SonarCloud Scan
