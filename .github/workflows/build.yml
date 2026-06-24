@@ -404,56 +404,6 @@ jobs:
           docker push ${{ secrets.ACR_LOGIN_SERVER }}/aeroinbox/${{ matrix.service }}:${{ github.sha }}
           docker push ${{ secrets.ACR_LOGIN_SERVER }}/aeroinbox/${{ matrix.service }}:latest
 
-  update-helm-tags:
-    name: Update Helm Image Tags
-    runs-on: ubuntu-latest
-    needs: [detect-changes, build-and-push]
-    if: |
-      needs.detect-changes.outputs.has-changes == 'true' &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') &&
-      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push_to_acr == true))
-    steps:
-      - name: Checkout Helm Repository
-        uses: actions/checkout@v4
-        with:
-          repository: AeroInbox-Email-Assistant/aeroinbox-helm
-          token: ${{ secrets.HELM_REPO_PAT }}
-
-      - name: Update Service Tags in Values.yaml
-        run: |
-          changed_services="${{ needs.detect-changes.outputs.changed-services }}"
-          
-          # Determine values file dynamically based on branch
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            files=("environments/production/values.yaml")
-          elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
-            files=("environments/dev/values.yaml")
-          else
-            files=("environments/production/values.yaml" "environments/dev/values.yaml")
-          fi
-          
-          for file in "${files[@]}"; do
-            mkdir -p "$(dirname "$file")"
-            if [ ! -f "$file" ]; then
-              echo "---" > "$file"
-            fi
-            for service in $changed_services; do
-              yq -i ".[\"$service\"].image.tag = \"${{ github.sha }}\"" "$file"
-            done
-          done
-
-      - name: Commit and Push Tag Changes
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add environments/production/values.yaml environments/dev/values.yaml
-          if ! git diff --cached --quiet; then
-            git commit -m "ci: update image tags to ${{ github.sha }}"
-            git push origin main
-          else
-            echo "No changes to commit"
-          fi
-
   scan-summary:
     name: PR Scan Summary
     runs-on: ubuntu-latest

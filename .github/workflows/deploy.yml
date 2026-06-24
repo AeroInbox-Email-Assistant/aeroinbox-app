@@ -1,0 +1,173 @@
+name: Deploy Pipeline
+
+on:
+  workflow_run:
+    workflows: ["Build Pipeline"]
+    types: [completed]
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target deployment environment'
+        type: choice
+        options:
+          - production
+          - dev
+        default: 'production'
+        required: true
+      image_tag:
+        description: 'Docker image tag to deploy (defaults to git commit sha)'
+        type: string
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  DEPLOY_ENV: ${{ github.event.workflow_run && (github.event.workflow_run.head_branch == 'main' && 'production' || 'dev') || github.event.inputs.environment }}
+  IMAGE_TAG: ${{ github.event.workflow_run && github.event.workflow_run.head_sha || github.event.inputs.image_tag || github.sha }}
+
+jobs:
+  deploy-and-verify:
+    name: Deploy & Verify Rollout
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run == null || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 1. Log in to Azure using passwordless OIDC federation
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # 2. Get AKS credentials to run kubectl commands
+      - name: Get AKS Cluster Credentials
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: rg-aeroinbox-${{ env.DEPLOY_ENV }}
+          cluster-name: aks-aeroinbox-${{ env.DEPLOY_ENV }}
+
+      # 3. Checkout Helm repository using PAT to update values
+      - name: Checkout Helm Repository
+        uses: actions/checkout@v4
+        with:
+          repository: AeroInbox-Email-Assistant/aeroinbox-helm
+          token: ${{ secrets.HELM_REPO_PAT }}
+          path: aeroinbox-helm
+
+      # 4. Update the Helm image tag for stateless services
+      - name: Update Service Tags in Helm
+        run: |
+          cd aeroinbox-helm
+          
+          if [ "${{ env.DEPLOY_ENV }}" = "production" ]; then
+            file="environments/production/values.yaml"
+          else
+            file="environments/dev/values.yaml"
+          fi
+          
+          services=("api-service" "gmail-service" "ai-service" "rule-engine" "meeting-service" "frontend")
+          
+          mkdir -p "$(dirname "$file")"
+          if [ ! -f "$file" ]; then
+            echo "---" > "$file"
+          fi
+          
+          for service in "${services[@]}"; do
+            yq -i ".[\"$service\"].image.tag = \"${{ env.IMAGE_TAG }}\"" "$file"
+          done
+
+      # 5. Commit and push the tags to trigger ArgoCD Sync
+      - name: Commit and Push Tag Changes
+        run: |
+          cd aeroinbox-helm
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          if [ "${{ env.DEPLOY_ENV }}" = "production" ]; then
+            file="environments/production/values.yaml"
+          else
+            file="environments/dev/values.yaml"
+          fi
+          
+          git add "$file"
+          if ! git diff --cached --quiet; then
+            git commit -m "ci: deploy image tags ${{ env.IMAGE_TAG }} to ${{ env.DEPLOY_ENV }}"
+            git push origin main
+          else
+            echo "No tag changes to commit."
+          fi
+
+      # 6. Verify rollout status of deployments in the cluster
+      - name: Verify Kubernetes Rollout Status
+        run: |
+          echo "Waiting for ArgoCD to detect and complete sync of deployments..."
+          sleep 45  # Allow ArgoCD to detect git push and begin rollout
+          
+          deployments=("aeroinbox-api-service" "aeroinbox-gmail-service" "aeroinbox-ai-service" "aeroinbox-rule-engine" "aeroinbox-meeting-service" "aeroinbox-frontend")
+          for deploy in "${deployments[@]}"; do
+            echo "Checking rollout status for deployment/$deploy..."
+            kubectl rollout status deployment/$deploy -n aeroinbox --timeout=5m
+          done
+
+      # 7. Run Smoke Tests to confirm services are responsive
+      - name: Run Deploy Smoke Tests
+        run: |
+          echo "Running smoke tests on service health endpoints..."
+          
+          # Query the internal cluster endpoints to verify pod-to-pod networking
+          curl -f --connect-timeout 5 http://aeroinbox-api-service.aeroinbox.svc.cluster.local:8000/healthz || exit 1
+          curl -f --connect-timeout 5 http://aeroinbox-gmail-service.aeroinbox.svc.cluster.local:8000/healthz || exit 1
+          curl -f --connect-timeout 5 http://aeroinbox-ai-service.aeroinbox.svc.cluster.local:8000/healthz || exit 1
+          curl -f --connect-timeout 5 http://aeroinbox-rule-engine.aeroinbox.svc.cluster.local:8000/healthz || exit 1
+          curl -f --connect-timeout 5 http://aeroinbox-meeting-service.aeroinbox.svc.cluster.local:8000/healthz || exit 1
+          curl -f --connect-timeout 5 http://aeroinbox-frontend.aeroinbox.svc.cluster.local:80/healthz || exit 1
+          
+          echo "✅ All smoke tests passed successfully!"
+
+      # 8. Send success email notification
+      - name: Send Success Email Notification
+        if: success()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "🚀 AeroInbox CD Deployment Success - Run #${{ github.run_number }}"
+          to: ${{ secrets.MAIL_TO }}
+          from: "AeroInbox CD <${{ secrets.MAIL_USERNAME }}>"
+          body: |
+            AeroInbox CD Deployment completed successfully!
+            
+            Environment: ${{ env.DEPLOY_ENV }}
+            Image Tag: ${{ env.IMAGE_TAG }}
+            Triggered by Build run: ${{ github.event.workflow_run.html_url || 'Manual run' }}
+            
+            Rollout verified for all microservices. Smoke tests passed successfully!
+
+      # 9. Send failure notification
+      - name: Send Failure Email Notification
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "❌ AeroInbox CD Deployment Failed - Run #${{ github.run_number }}"
+          to: ${{ secrets.MAIL_TO }}
+          from: "AeroInbox CD <${{ secrets.MAIL_USERNAME }}>"
+          body: |
+            AeroInbox CD Deployment failed during rollout or verification.
+            
+            Environment: ${{ env.DEPLOY_ENV }}
+            Image Tag: ${{ env.IMAGE_TAG }}
+            
+            Please review the CD pipeline logs here:
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

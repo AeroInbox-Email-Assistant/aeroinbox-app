@@ -43,3 +43,6 @@ credentials.json
 # OS
 .DS_Store
 Thumbs.db
+graphify-out/
+.coverage
+coverage.xml
