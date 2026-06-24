@@ -10,6 +10,12 @@ on:
       - main
       - develop
   workflow_dispatch:
+    inputs:
+      push_to_acr:
+        description: 'Push built images to ACR (only on main or develop branch)'
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: aeroinbox-build-${{ github.ref }}
@@ -374,7 +380,9 @@ jobs:
           path: trivy-report-${{ matrix.service }}.txt
 
       - name: Azure Login (OIDC)
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+        if: |
+          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') &&
+          (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push_to_acr == true))
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -382,12 +390,16 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Login to Azure Container Registry
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+        if: |
+          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') &&
+          (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push_to_acr == true))
         run: |
           az acr login --name ${{ secrets.ACR_NAME }}
 
       - name: Push Docker Image to ACR
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+        if: |
+          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') &&
+          (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push_to_acr == true))
         run: |
           docker push ${{ secrets.ACR_LOGIN_SERVER }}/aeroinbox/${{ matrix.service }}:${{ github.sha }}
           docker push ${{ secrets.ACR_LOGIN_SERVER }}/aeroinbox/${{ matrix.service }}:latest
@@ -398,8 +410,8 @@ jobs:
     needs: [detect-changes, build-and-push]
     if: |
       needs.detect-changes.outputs.has-changes == 'true' &&
-      github.event_name == 'push' && 
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push_to_acr == true))
     steps:
       - name: Checkout Helm Repository
         uses: actions/checkout@v4
