@@ -253,15 +253,12 @@ jobs:
           name: python-coverage
           path: coverage-reports
 
-      # Run the SonarCloud analysis and wait for the Quality Gate status
+      # Run the SonarCloud analysis (quality gate results are posted asynchronously to GitHub)
       - name: SonarCloud Scan
         uses: sonarsource/sonarcloud-github-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          args: >
-            -Dsonar.qualitygate.wait=true
 
       - name: Setup Python for Snyk
         if: needs.detect-changes.outputs.has-python-changes == 'true'
