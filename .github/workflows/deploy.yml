@@ -50,8 +50,8 @@ jobs:
       - name: Get AKS Cluster Credentials
         uses: azure/aks-set-context@v4
         with:
-          resource-group: rg-aeroinbox-${{ env.DEPLOY_ENV }}
-          cluster-name: aks-aeroinbox-${{ env.DEPLOY_ENV }}
+          resource-group: rg-aeroinbox-${{ env.DEPLOY_ENV == 'production' && 'prod' || env.DEPLOY_ENV }}
+          cluster-name: aks-aeroinbox-${{ env.DEPLOY_ENV == 'production' && 'prod' || env.DEPLOY_ENV }}
 
       # 3. Checkout Helm repository using PAT to update values
       - name: Checkout Helm Repository
