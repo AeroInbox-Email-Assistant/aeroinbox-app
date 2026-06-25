@@ -112,7 +112,7 @@ jobs:
           deployments=("aeroinbox-api-service" "aeroinbox-gmail-service" "aeroinbox-ai-service" "aeroinbox-rule-engine" "aeroinbox-meeting-service" "aeroinbox-frontend")
           for deploy in "${deployments[@]}"; do
             echo "Checking rollout status for deployment/$deploy..."
-            kubectl rollout status deployment/$deploy -n aeroinbox --timeout=5m
+            kubectl rollout status deployment/$deploy -n production --timeout=5m
           done
 
       # 7. Run Smoke Tests to confirm services are responsive
@@ -121,12 +121,12 @@ jobs:
           echo "Running smoke tests on service health endpoints..."
           
           # Query the internal cluster endpoints to verify pod-to-pod networking
-          curl -f --connect-timeout 5 http://aeroinbox-api-service.aeroinbox.svc.cluster.local:8000/healthz || exit 1
-          curl -f --connect-timeout 5 http://aeroinbox-gmail-service.aeroinbox.svc.cluster.local:8000/healthz || exit 1
-          curl -f --connect-timeout 5 http://aeroinbox-ai-service.aeroinbox.svc.cluster.local:8000/healthz || exit 1
-          curl -f --connect-timeout 5 http://aeroinbox-rule-engine.aeroinbox.svc.cluster.local:8000/healthz || exit 1
-          curl -f --connect-timeout 5 http://aeroinbox-meeting-service.aeroinbox.svc.cluster.local:8000/healthz || exit 1
-          curl -f --connect-timeout 5 http://aeroinbox-frontend.aeroinbox.svc.cluster.local:80/healthz || exit 1
+          curl -f --connect-timeout 5 http://aeroinbox-api-service.production.svc.cluster.local:8000/healthz || exit 1
+          curl -f --connect-timeout 5 http://aeroinbox-gmail-service.production.svc.cluster.local:8000/healthz || exit 1
+          curl -f --connect-timeout 5 http://aeroinbox-ai-service.production.svc.cluster.local:8000/healthz || exit 1
+          curl -f --connect-timeout 5 http://aeroinbox-rule-engine.production.svc.cluster.local:8000/healthz || exit 1
+          curl -f --connect-timeout 5 http://aeroinbox-meeting-service.production.svc.cluster.local:8000/healthz || exit 1
+          curl -f --connect-timeout 5 http://aeroinbox-frontend.production.svc.cluster.local:80/healthz || exit 1
           
           echo "✅ All smoke tests passed successfully!"
 
