@@ -33,6 +33,7 @@ jobs:
     name: Deploy & Verify Rollout
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run == null || github.event.workflow_run.conclusion == 'success' }}
+    environment: ${{ env.DEPLOY_ENV }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
