@@ -38,22 +38,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 1. Log in to Azure using passwordless OIDC federation
-      - name: Azure Login via OIDC
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      # 2. Get AKS credentials to run kubectl commands
-      - name: Get AKS Cluster Credentials
-        uses: azure/aks-set-context@v4
-        with:
-          resource-group: rg-aeroinbox-${{ env.DEPLOY_ENV == 'production' && 'prod' || env.DEPLOY_ENV }}
-          cluster-name: aks-aeroinbox-${{ env.DEPLOY_ENV == 'production' && 'prod' || env.DEPLOY_ENV }}
-
-      # 3. Checkout Helm repository using PAT to update values
+      # 1. Checkout Helm repository using PAT to update values
       - name: Checkout Helm Repository
         uses: actions/checkout@v4
         with:
@@ -61,7 +46,7 @@ jobs:
           token: ${{ secrets.HELM_REPO_PAT }}
           path: aeroinbox-helm
 
-      # 4. Update the Helm image tag for stateless services
+      # 2. Update the Helm image tag for stateless services
       - name: Update Service Tags in Helm
         run: |
           cd aeroinbox-helm
@@ -83,7 +68,7 @@ jobs:
             yq -i ".[\"$service\"].image.tag = \"${{ env.IMAGE_TAG }}\"" "$file"
           done
 
-      # 5. Commit and push the tags to trigger ArgoCD Sync
+      # 3. Commit and push the tags to trigger ArgoCD Sync
       - name: Commit and Push Tag Changes
         run: |
           cd aeroinbox-helm
@@ -104,7 +89,7 @@ jobs:
             echo "No tag changes to commit."
           fi
 
-      # 6. Run External Smoke Tests via Application Gateway
+      # 4. Run External Smoke Tests via Application Gateway
       - name: Run Deploy Smoke Tests
         run: |
           echo "Notice: AKS is a private cluster. Internal rollout status checks (kubectl) cannot be executed."
@@ -147,7 +132,7 @@ jobs:
             exit 1
           fi
 
-      # 8. Send success email notification
+      # 5. Send success email notification
       - name: Send Success Email Notification
         if: success()
         uses: dawidd6/action-send-mail@v3
@@ -168,7 +153,7 @@ jobs:
             
             Rollout verified for all microservices. Smoke tests passed successfully!
 
-      # 9. Send failure notification
+      # 6. Send failure email notification
       - name: Send Failure Email Notification
         if: failure()
         uses: dawidd6/action-send-mail@v3
