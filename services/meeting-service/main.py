@@ -407,36 +407,46 @@ async def detect_meetings_from_emails(emails: List[dict]):
 
 async def _handle_existing_meeting(
     existing: Meeting,
+    source_email_id: str,
     status: str,
     start_datetime: str,
     end_datetime: str,
     now_str: str,
-    participants: List[Participant]
+    participants: List[Participant],
+    description: str = None
 ):
+    # Always link to the latest email ID so the frontend banner can match it
+    existing.source_email_id = source_email_id
+    if description:
+        existing.description = description
+        
     if status == "Cancelled":
         existing.status = "Cancelled"
         existing.updated_timestamp = now_str
         await repo.update_meeting(existing)
         return
         
-    if existing.start_datetime == start_datetime and existing.end_datetime == end_datetime:
-        return
-        
-    # Reschedule detected
-    existing.prev_start_datetime = existing.start_datetime
-    existing.prev_end_datetime = existing.end_datetime
-    existing.start_datetime = start_datetime
-    existing.end_datetime = end_datetime
-    existing.status = "Updated"
-    existing.updated_timestamp = now_str
+    # Check if the meeting has been rescheduled
+    dates_changed = (existing.start_datetime != start_datetime or existing.end_datetime != end_datetime)
     
+    if dates_changed:
+        existing.prev_start_datetime = existing.start_datetime
+        existing.prev_end_datetime = existing.end_datetime
+        existing.start_datetime = start_datetime
+        existing.end_datetime = end_datetime
+        existing.status = "Updated"
+        existing.updated_timestamp = now_str
+    else:
+        existing.updated_timestamp = now_str
+        
     # Merge participants
     existing_emails = {p.participant_email for p in existing.participants}
     for p in participants:
         if p.participant_email not in existing_emails:
             existing.participants.append(p)
+            
     await repo.update_meeting(existing)
-    if existing.status in ("Confirmed", "Updated"):
+    if dates_changed and existing.status in ("Confirmed", "Updated"):
         await schedule_reminder_for_meeting(existing)
 
 async def _handle_new_meeting(
@@ -498,7 +508,9 @@ async def save_or_update_meeting(
         existing = await repo.get_meeting_by_title_and_organizer(user_id, meeting_title, organizer)
         
     if existing:
-        await _handle_existing_meeting(existing, status, start_datetime, end_datetime, now_str, participants)
+        await _handle_existing_meeting(
+            existing, source_email_id, status, start_datetime, end_datetime, now_str, participants, description
+        )
     else:
         await _handle_new_meeting(
             user_id=user_id,
