@@ -93,7 +93,7 @@ jobs:
       - name: Run Deploy Smoke Tests
         run: |
           echo "Notice: AKS is a private cluster. Internal rollout status checks (kubectl) cannot be executed."
-          echo "Performing external smoke tests via Application Gateway Public IP (70.153.112.119)..."
+          echo "Performing external smoke tests via Application Gateway Public IP (70.153.121.19)..."
           
           echo "Waiting 45 seconds for ArgoCD to detect tag updates and start the rollout..."
           sleep 45
@@ -106,14 +106,14 @@ jobs:
             echo "Attempt $i: Querying external endpoints..."
             
             if [ "$success_api" = "false" ]; then
-              if curl -s -f -o /dev/null -H "Host: api.aeroinbox.qzz.io" --connect-timeout 5 http://70.153.112.119/healthz; then
+              if curl -s -f -o /dev/null -H "Host: api.aeroinbox.qzz.io" --connect-timeout 5 http://70.153.121.19/healthz; then
                 echo "✅ API Service is responsive and healthy!"
                 success_api=true
               fi
             fi
             
             if [ "$success_fe" = "false" ]; then
-              if curl -s -f -o /dev/null -H "Host: aeroinbox.qzz.io" --connect-timeout 5 http://70.153.112.119/healthz; then
+              if curl -s -f -o /dev/null -H "Host: aeroinbox.qzz.io" --connect-timeout 5 http://70.153.121.19/healthz; then
                 echo "✅ Frontend is responsive and healthy!"
                 success_fe=true
               fi
