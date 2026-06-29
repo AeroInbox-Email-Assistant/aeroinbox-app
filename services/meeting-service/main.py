@@ -275,11 +275,14 @@ async def _save_ai_detected_meeting(
     ai_organizer = ai_res.get("organizer", sender)
     ai_start_date = ai_res.get("start_date")
     ai_start_time = ai_res.get("start_time")
-    ai_end_date = ai_res.get("end_date") or ai_start_date
-    ai_end_time = ai_res.get("end_time")
-    
-    start_dt = f"{ai_start_date}T{ai_start_time}:00"
-    end_dt = f"{ai_end_date}T{ai_end_time}:00"
+    if ai_start_date and ai_start_time:
+        ai_end_date = ai_res.get("end_date") or ai_start_date
+        ai_end_time = ai_res.get("end_time") or ai_start_time
+        start_dt = f"{ai_start_date}T{ai_start_time}:00"
+        end_dt = f"{ai_end_date}T{ai_end_time}:00"
+    else:
+        start_dt = datetime.now(timezone.utc).isoformat()
+        end_dt = start_dt
     
     action_type = ai_res.get("action_type", "create")
     status = "Pending"
@@ -341,7 +344,7 @@ async def _process_text_email(client: httpx.AsyncClient, user_id: str, source_em
         logger.error("AI service returned non-200 status code %s for email %s: %s", response.status_code, source_email_id, response.text)
     
     is_meeting = False
-    if ai_res and ai_res.get("is_meeting"):
+    if ai_res and (ai_res.get("is_meeting") or (ai_res.get("start_date") and ai_res.get("start_time"))):
         is_meeting = True
         await _save_ai_detected_meeting(
             user_id=user_id,
