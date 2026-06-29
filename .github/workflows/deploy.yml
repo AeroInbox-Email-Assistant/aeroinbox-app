@@ -173,3 +173,5 @@ jobs:
             
             Please review the CD pipeline logs here:
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+# Force full rebuild of all services due to path-filter tag sync bug
