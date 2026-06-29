@@ -1380,8 +1380,9 @@ export default function Dashboard() {
                     try {
                       const startISO = new Date(`${addMeetingForm.start_date}T${addMeetingForm.start_time}`).toISOString();
                       const endISO = new Date(new Date(`${addMeetingForm.start_date}T${addMeetingForm.start_time}`).getTime() + parseInt(addMeetingForm.duration) * 60000).toISOString();
+                      const resolvedUserEmail = activeEmailFilter || localStorage.getItem("user_email") || "executive@gmail.com";
                       await API.post("/meetings/manual", {
-                        user_id: userEmail,
+                        user_id: resolvedUserEmail,
                         meeting_title: addMeetingForm.meeting_title,
                         meeting_url: addMeetingForm.meeting_url || null,
                         meeting_platform: addMeetingForm.meeting_platform,
