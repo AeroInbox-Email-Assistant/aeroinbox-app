@@ -201,6 +201,18 @@ export default function Dashboard() {
   });
   const [pendingMeetings, setPendingMeetings] = useState([]);
   const [meetingsLoading, setMeetingsLoading] = useState(false);
+  const [showAddMeetingModal, setShowAddMeetingModal] = useState(false);
+  const [addMeetingForm, setAddMeetingForm] = useState({
+    meeting_title: "",
+    meeting_url: "",
+    meeting_platform: "Google Meet",
+    start_date: "",
+    start_time: "",
+    duration: "60",
+    description: "",
+  });
+  const [addMeetingLoading, setAddMeetingLoading] = useState(false);
+  const [addMeetingError, setAddMeetingError] = useState("");
 
   // Task Board state
   const [tasks, setTasks] = useState([]);
@@ -1237,13 +1249,162 @@ export default function Dashboard() {
               View and join your scheduled executive calls
             </p>
           </div>
-          <button
-            onClick={fetchMeetings}
-            className="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-505 text-xs font-bold text-white transition-all cursor-pointer shadow-md shadow-indigo-605/10 flex items-center space-x-1.5"
-          >
-            <span>Refresh Calendar</span>
-          </button>
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => { setAddMeetingError(""); setAddMeetingForm({ meeting_title: "", meeting_url: "", meeting_platform: "Google Meet", start_date: "", start_time: "", duration: "60", description: "" }); setShowAddMeetingModal(true); }}
+              className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white transition-all cursor-pointer shadow-md flex items-center space-x-1.5"
+            >
+              <span>+ Add Meeting</span>
+            </button>
+            <button
+              onClick={fetchMeetings}
+              className="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white transition-all cursor-pointer shadow-md shadow-indigo-600/10 flex items-center space-x-1.5"
+            >
+              <span>Refresh Calendar</span>
+            </button>
+          </div>
         </div>
+
+        {/* Add Meeting Modal */}
+        {showAddMeetingModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="bg-white dark:bg-[#0c1221] rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl w-full max-w-md mx-4 p-6">
+              <div className="flex items-center justify-between mb-5">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white">Add Meeting Manually</h3>
+                <button onClick={() => setShowAddMeetingModal(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-lg cursor-pointer">✕</button>
+              </div>
+
+              {addMeetingError && (
+                <p className="text-xs text-red-500 mb-3 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2">{addMeetingError}</p>
+              )}
+
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Meeting Title *</label>
+                  <input
+                    type="text"
+                    value={addMeetingForm.meeting_title}
+                    onChange={e => setAddMeetingForm(f => ({ ...f, meeting_title: e.target.value }))}
+                    placeholder="e.g. Weekly Sync with Board"
+                    className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#070a13] text-xs text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Date *</label>
+                    <input
+                      type="date"
+                      value={addMeetingForm.start_date}
+                      onChange={e => setAddMeetingForm(f => ({ ...f, start_date: e.target.value }))}
+                      className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#070a13] text-xs text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Time *</label>
+                    <input
+                      type="time"
+                      value={addMeetingForm.start_time}
+                      onChange={e => setAddMeetingForm(f => ({ ...f, start_time: e.target.value }))}
+                      className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#070a13] text-xs text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Duration</label>
+                    <select
+                      value={addMeetingForm.duration}
+                      onChange={e => setAddMeetingForm(f => ({ ...f, duration: e.target.value }))}
+                      className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#070a13] text-xs text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="30">30 minutes</option>
+                      <option value="60">1 hour</option>
+                      <option value="90">1.5 hours</option>
+                      <option value="120">2 hours</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Platform</label>
+                    <select
+                      value={addMeetingForm.meeting_platform}
+                      onChange={e => setAddMeetingForm(f => ({ ...f, meeting_platform: e.target.value }))}
+                      className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#070a13] text-xs text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option>Google Meet</option>
+                      <option>Zoom</option>
+                      <option>Microsoft Teams</option>
+                      <option>Other</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Meeting URL</label>
+                  <input
+                    type="url"
+                    value={addMeetingForm.meeting_url}
+                    onChange={e => setAddMeetingForm(f => ({ ...f, meeting_url: e.target.value }))}
+                    placeholder="https://meet.google.com/..."
+                    className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#070a13] text-xs text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Notes</label>
+                  <textarea
+                    value={addMeetingForm.description}
+                    onChange={e => setAddMeetingForm(f => ({ ...f, description: e.target.value }))}
+                    placeholder="Optional agenda or notes..."
+                    rows={2}
+                    className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#070a13] text-xs text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end space-x-2 mt-5">
+                <button
+                  onClick={() => setShowAddMeetingModal(false)}
+                  className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  disabled={addMeetingLoading}
+                  onClick={async () => {
+                    if (!addMeetingForm.meeting_title.trim()) { setAddMeetingError("Meeting title is required."); return; }
+                    if (!addMeetingForm.start_date || !addMeetingForm.start_time) { setAddMeetingError("Date and time are required."); return; }
+                    setAddMeetingLoading(true);
+                    setAddMeetingError("");
+                    try {
+                      const startISO = new Date(`${addMeetingForm.start_date}T${addMeetingForm.start_time}`).toISOString();
+                      const endISO = new Date(new Date(`${addMeetingForm.start_date}T${addMeetingForm.start_time}`).getTime() + parseInt(addMeetingForm.duration) * 60000).toISOString();
+                      await API.post("/meetings/manual", {
+                        user_id: userEmail,
+                        meeting_title: addMeetingForm.meeting_title,
+                        meeting_url: addMeetingForm.meeting_url || null,
+                        meeting_platform: addMeetingForm.meeting_platform,
+                        start_datetime: startISO,
+                        end_datetime: endISO,
+                        description: addMeetingForm.description || null,
+                      });
+                      setShowAddMeetingModal(false);
+                      await fetchMeetings();
+                    } catch (err) {
+                      setAddMeetingError(err?.response?.data?.detail || "Failed to add meeting. Please try again.");
+                    } finally {
+                      setAddMeetingLoading(false);
+                    }
+                  }}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {addMeetingLoading ? "Adding..." : "Add Meeting"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="flex-1 grid grid-cols-4 gap-4 overflow-y-auto min-h-0 pb-4">
           {columns.map((col) => {

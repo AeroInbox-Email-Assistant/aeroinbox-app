@@ -508,6 +508,20 @@ async def save_or_update_meeting(
         existing = await repo.get_meeting_by_title_and_organizer(user_id, meeting_title, organizer)
         
     if existing:
+        # If the old meeting is already confirmed AND the new email has a
+        # different date, this is a genuinely new meeting that reuses the
+        # same URL. Treat it as a new entry rather than re-linking the old one.
+        existing_date = (existing.start_datetime or "")[:10]
+        new_date = (start_datetime or "")[:10]
+        is_new_distinct_meeting = (
+            existing.calendar_added_flag == 1 and
+            existing_date and new_date and
+            existing_date != new_date
+        )
+        if is_new_distinct_meeting:
+            existing = None  # force new meeting creation below
+
+    if existing:
         await _handle_existing_meeting(
             existing, source_email_id, status, start_datetime, end_datetime, now_str, participants, description
         )
@@ -567,6 +581,48 @@ async def schedule_reminder_for_meeting(meet: Meeting):
         logger.exception("Failed to schedule reminder for meeting %s", meet.id)
 
 # API Routes
+
+class ManualMeetingRequest(BaseModel):
+    user_id: str
+    meeting_title: str
+    meeting_url: Optional[str] = None
+    meeting_platform: Optional[str] = "Other"
+    start_datetime: str
+    end_datetime: Optional[str] = None
+    description: Optional[str] = None
+    organizer: Optional[str] = None
+
+@app.post("/meetings/manual", status_code=201)
+async def create_manual_meeting(payload: ManualMeetingRequest):
+    """
+    Allows a user to manually add a meeting that was not auto-detected from email.
+    """
+    now_str = datetime.now(timezone.utc).isoformat()
+    end_dt = payload.end_datetime or payload.start_datetime
+    new_meet = Meeting(
+        user_id=payload.user_id,
+        source_email_id="manual",
+        source_platform="manual",
+        meeting_platform=payload.meeting_platform or "Other",
+        meeting_url=payload.meeting_url or "",
+        meeting_title=payload.meeting_title,
+        description=payload.description or "",
+        organizer=payload.organizer or payload.user_id,
+        start_datetime=payload.start_datetime,
+        end_datetime=end_dt,
+        prev_start_datetime=payload.start_datetime,
+        prev_end_datetime=end_dt,
+        status="Pending",
+        calendar_added_flag=0,
+        reminder_1_day_sent=0,
+        reminder_1_hour_sent=0,
+        created_timestamp=now_str,
+        updated_timestamp=now_str,
+        participants=[]
+    )
+    created = await repo.create_meeting(new_meet)
+    return created
+
 @app.post("/meetings/detect")
 async def detect_meetings(payload: DetectRequest, background_tasks: BackgroundTasks):
     """

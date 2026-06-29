@@ -2,7 +2,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Depends
 from config.settings import settings
 from auth_deps import get_session_accounts, AccountPayload
-from typing import List, Annotated
+from typing import List, Annotated, Optional
+from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -19,6 +20,16 @@ _RESPONSES_403_502 = {
 _RESPONSES_502 = {
     502: {"description": "Failed to communicate with backend Meeting Service"}
 }
+
+class ManualMeetingRequest(BaseModel):
+    user_id: str
+    meeting_title: str
+    meeting_url: Optional[str] = None
+    meeting_platform: Optional[str] = "Other"
+    start_datetime: str
+    end_datetime: Optional[str] = None
+    description: Optional[str] = None
+    organizer: Optional[str] = None
 
 @router.get("", responses=_RESPONSES_403_502)
 async def get_meetings(
@@ -59,6 +70,29 @@ async def get_pending_meetings(
                 timeout=15.0
             )
             if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+            return response.json()
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"{_ERR_COMMUNICATION}: {str(e)}")
+
+@router.post("/manual", status_code=201, responses=_RESPONSES_403_502)
+async def create_manual_meeting(
+    payload: ManualMeetingRequest,
+    accounts: Annotated[List[AccountPayload], Depends(get_session_accounts)] = None
+):
+    """Proxy to create a manually entered meeting in meeting-service."""
+    # Security check: user_id must belong to the authenticated session
+    if not any(acc.email == payload.user_id for acc in accounts):
+        raise HTTPException(status_code=403, detail=_DENIED_SESSION)
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{settings.MEETING_SERVICE_URL}/meetings/manual",
+                json=payload.dict(),
+                timeout=15.0
+            )
+            if response.status_code not in (200, 201):
                 raise HTTPException(status_code=response.status_code, detail=response.text)
             return response.json()
         except httpx.HTTPError as e:
