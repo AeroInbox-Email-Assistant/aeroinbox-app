@@ -615,8 +615,8 @@ async def create_manual_meeting(payload: ManualMeetingRequest):
         end_datetime=end_dt,
         prev_start_datetime=payload.start_datetime,
         prev_end_datetime=end_dt,
-        status="Pending",
-        calendar_added_flag=0,
+        status="Confirmed",
+        calendar_added_flag=1,
         reminder_1_day_sent=0,
         reminder_1_hour_sent=0,
         created_timestamp=now_str,
@@ -624,6 +624,8 @@ async def create_manual_meeting(payload: ManualMeetingRequest):
         participants=[]
     )
     created = await repo.create_meeting(new_meet)
+    if created.status in ("Confirmed", "Updated"):
+        await schedule_reminder_for_meeting(created)
     return created
 
 @app.post("/meetings/detect")
